@@ -1,0 +1,17 @@
+[package]
+name = "vectorcraft-extendscript"
+description = "Runs scripts written for the reference app's scripting (`.jsx`) against a VectorCraft session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vectorcraft-engine = { workspace = true }
+boa_engine = "0.22"
+boa_gc = "0.22"
+serde_json = { workspace = true }
+thiserror = { workspace = true }

@@ -63,6 +63,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("plugins", Class::Layer(2)),
     ("affinity", Class::Standalone),
     ("scriptcheck", Class::Standalone),
+    // Runs scripts against an engine session: it sits beside the MCP server.
+    ("extendscript", Class::Layer(6)),
 ];
 
 /// Explicit orderings *within* a layer (earlier may be used by later).
