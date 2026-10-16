@@ -1,0 +1,23 @@
+# A manual build of vectorcraft-cli for Windows, for trying `vectorcraft-cli script` without
+# installing Rust: Actions › "Windows CLI (test build)" › Run workflow, then download the artifact.
+name: Windows CLI (test build)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p vectorcraft-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vectorcraft-cli-windows
+          path: target/release/vectorcraft-cli.exe
+          if-no-files-found: error
