@@ -1,8 +1,11 @@
-# A manual build of vectorcraft-cli for Windows, for trying `vectorcraft-cli script` without
-# installing Rust: Actions › "Windows CLI (test build)" › Run workflow, then download the artifact.
+# A build of vectorcraft-cli for Windows, for trying `vectorcraft-cli script` without installing
+# Rust. It runs on every push to extendscript-compat (and by hand: Actions › "Windows CLI (test
+# build)" › Run workflow, once this file is on the default branch); download the artifact from the run.
 name: Windows CLI (test build)
 
 on:
+  push:
+    branches: [extendscript-compat]
   workflow_dispatch:
 
 permissions:
