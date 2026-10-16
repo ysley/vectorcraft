@@ -17,6 +17,7 @@ workspace = true
 vectorcraft-color = { workspace = true }
 vectorcraft-doc = { workspace = true }
 vectorcraft-engine = { workspace = true }
+vectorcraft-extendscript = { workspace = true }
 vectorcraft-format = { workspace = true }
 vectorcraft-geom = { workspace = true }
 vectorcraft-svg = { workspace = true }

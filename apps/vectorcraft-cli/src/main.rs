@@ -3,6 +3,7 @@
 //! ```text
 //! vectorcraft-cli mcp [--connect 127.0.0.1:7979 | --headless] [--automation-read-root DIR] [--automation-write-root DIR]
 //! vectorcraft-cli run [--in FILE] [--cmd id [--params '{json}']]... [--export out.svg]... [--scale 2]
+//! vectorcraft-cli script FILE.jsx [--in FILE] [--select-all] [--export out.png]... [--save out.vectorcraft]
 //! vectorcraft-cli commands
 //! vectorcraft-cli convert IN OUT [--scale 2] [--artboard 0 | --range 1-3,5] [--outline-text] [--decimals N] [--replace-lossy] [--editing-data] [--ai-version 7|pdf] [--hidden-objects layer|omit|visible] [--transparent-images flatten|omit]
 //! vectorcraft-cli info FILE
@@ -81,6 +82,14 @@ USAGE:
       order, export each FILE in the format its extension picks (see Writable formats). Prints one
       JSON result per step.
 
+  vectorcraft-cli script FILE.jsx [--in FILE] [--select-all] [--export FILE]... [--save FILE] [--scale N]
+      Run a script written for the reference app's scripting (.jsx) headless: open FILE or start a
+      new document, run the script against it, then export and save as asked. Prints the script's
+      alert() texts and its last value as JSON lines. --select-all selects everything first, for
+      scripts that work on the selection. Not supported yet: Window dialogs, File and Folder,
+      $.evalFile, E4X; the error names what is missing. See vectorcraft-scriptcheck for what a
+      script needs before you run it.
+
   vectorcraft-cli commands
       Print the command catalogue as JSON.
 
@@ -135,6 +144,7 @@ fn main() -> ExitCode {
     let r = match args.first().map(String::as_str) {
         Some("mcp") => mcp(&args[1..]),
         Some("run") => run(&args[1..]),
+        Some("script") => script(&args[1..]),
         Some("commands") => commands(),
         Some("convert") => convert(&args[1..]),
         Some("info") => info(&args[1..]),
@@ -369,6 +379,70 @@ fn run(args: &[String]) -> Result<(), String> {
         results.push(r);
     }
     Ok(())
+}
+
+fn script(args: &[String]) -> Result<(), String> {
+    let mut file: Option<String> = None;
+    let mut input: Option<String> = None;
+    let mut select_all = false;
+    let mut exports: Vec<String> = vec![];
+    let mut save: Option<String> = None;
+    let mut scale = 1.0;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = |what: &str| it.next().cloned().ok_or_else(|| format!("{a} needs {what}"));
+        match a.as_str() {
+            "--in" | "-i" => input = Some(val("a file")?),
+            "--select-all" => select_all = true,
+            "--export" | "-o" => exports.push(val("a file")?),
+            "--save" => save = Some(val("a file")?),
+            "--scale" | "-s" => {
+                let raw = val("a number")?;
+                scale = raw.parse::<f64>().map_err(|_| format!("--scale {raw}: not a number"))?;
+            }
+            f if !f.starts_with('-') && file.is_none() => file = Some(f.to_string()),
+            other => return Err(format!("unknown script option `{other}`")),
+        }
+    }
+    let file = file.ok_or("script needs a FILE.jsx")?;
+    let bytes = std::fs::read(&file).map_err(|e| format!("read {file}: {e}"))?;
+    // Scripts come as UTF-8, often with a byte order mark.
+    let source = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
+
+    let mut h = Headless::new();
+    if let Some(path) = &input {
+        h.call("app.open", json!({"path": path})).map_err(|e| format!("open {path}: {e}"))?;
+    } else {
+        h.ensure_document();
+    }
+    if select_all {
+        h.call("engine.execute", json!({"command": "select.all", "params": {}})).map_err(|e| format!("select.all: {e}"))?;
+    }
+    let outcome = vectorcraft_extendscript::run(&mut h.session, &source);
+    match &outcome {
+        Ok(o) => {
+            for a in &o.alerts {
+                outln!("{}", json!({"alert": a}));
+            }
+            outln!("{}", json!({"done": file, "value": o.value}));
+        }
+        Err(vectorcraft_extendscript::ScriptError::Script { alerts, .. }) => {
+            for a in alerts {
+                outln!("{}", json!({"alert": a}));
+            }
+        }
+        Err(_) => {}
+    }
+    // What the script changed stays in the session whether or not it finished: export it too.
+    for path in &exports {
+        let r = h.call("app.export", json!({"path": path, "scale": scale})).map_err(|e| format!("export {path}: {e}"))?;
+        outln!("{}", json!({"export": r}));
+    }
+    if let Some(path) = &save {
+        let r = h.call("engine.execute", json!({"command": "file.save", "params": {"path": path}})).map_err(|e| format!("save {path}: {e}"))?;
+        outln!("{}", json!({"save": r}));
+    }
+    outcome.map(|_| ()).map_err(|e| format!("{file}: {e}"))
 }
 
 fn bench(args: &[String]) -> Result<(), String> {

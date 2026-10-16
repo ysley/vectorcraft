@@ -1,10 +1,13 @@
-//! The objects a script reaches: `app`, the document, its layers and page items, `RGBColor` and
-//! `alert`. Every property reads the engine's current document and every change is an engine
-//! command, so a script's edits go through undo, the journal and the guard like the user's own.
+//! The objects a script reaches: `app`, the document and its collections, and the shared
+//! plumbing the other object modules build on. Every property reads the engine's current document
+//! and every change is an engine command, so a script's edits go through undo, the journal and
+//! the guard like the user's own.
 //!
 //! The names and shapes follow the public scripting reference of the app this layer stands in
 //! for (type names such as `GroupItem`, `PathItem`, `TextFrame`; collections with `length`). What
 //! a script observes beyond those documented names is whatever the engine does.
+
+use std::{cell::Cell, rc::Rc};
 
 use boa_engine::{
     Context, JsError, JsNativeError, JsObject, JsResult, JsString, JsValue, NativeFunction, js_string,
@@ -13,62 +16,179 @@ use boa_engine::{
         builtins::{JsArray, JsFunction},
     },
     property::Attribute,
+    realm::Realm,
 };
 use boa_gc::{Finalize, Trace};
 use serde_json::{Value, json};
 
-use crate::host::Host;
+use crate::{geom::Origin, host::Host, node};
 
-type Getter = fn(&Cap, &mut Context) -> JsResult<JsValue>;
-type Setter = fn(&Cap, &JsValue, &mut Context) -> JsResult<()>;
+pub(crate) type Getter = fn(&Cap, &mut Context) -> JsResult<JsValue>;
+pub(crate) type Setter = fn(&Cap, &JsValue, &mut Context) -> JsResult<()>;
+pub(crate) type Method = fn(&Cap, &[JsValue], &mut Context) -> JsResult<JsValue>;
 
-/// What a property's native function needs: the session and the node it belongs to (0 for the
-/// document itself).
+/// What a property's native function needs: the session and the object it belongs to. An object
+/// made before it has content (`pathItems.add()`) has no id until its first content arrives.
 #[derive(Clone, Trace, Finalize)]
-struct Cap {
-    host: Host,
+pub(crate) struct Cap {
+    pub host: Host,
     #[unsafe_ignore_trace]
-    id: u64,
+    id: Rc<Cell<Option<u64>>>,
+    /// Which of several related properties a shared function serves.
+    #[unsafe_ignore_trace]
+    pub tag: u8,
+}
+
+impl Cap {
+    pub fn new(host: &Host, id: Option<u64>) -> Self {
+        Self { host: host.clone(), id: Rc::new(Cell::new(id)), tag: 0 }
+    }
+
+    pub fn with_tag(&self, tag: u8) -> Self {
+        Self { host: self.host.clone(), id: Rc::clone(&self.id), tag }
+    }
+
+    pub fn id(&self) -> Option<u64> {
+        self.id.get()
+    }
+
+    /// The id, for an object that exists in the document.
+    pub fn need(&self) -> JsResult<u64> {
+        self.id.get().ok_or_else(|| error("the object has no content yet"))
+    }
+
+    pub fn bind(&self, id: u64) {
+        self.id.set(Some(id));
+    }
 }
 
 #[derive(Clone, Trace, Finalize)]
-struct GetCap {
+struct FnCap<F: 'static + Copy> {
     cap: Cap,
     #[unsafe_ignore_trace]
-    f: Getter,
+    f: F,
 }
 
-#[derive(Clone, Trace, Finalize)]
-struct SetCap {
-    cap: Cap,
-    #[unsafe_ignore_trace]
-    f: Setter,
-}
-
-fn error(msg: impl Into<String>) -> JsError {
+pub(crate) fn error(msg: impl Into<String>) -> JsError {
     JsNativeError::error().with_message(msg.into()).into()
 }
 
-fn getter(cap: &Cap, f: Getter, ctx: &Context) -> JsFunction {
-    NativeFunction::from_copy_closure_with_captures(|_this, _args, c: &GetCap, ctx| (c.f)(&c.cap, ctx), GetCap { cap: cap.clone(), f })
-        .to_js_function(ctx.realm())
+pub(crate) fn text(s: &str) -> JsValue {
+    JsValue::from(JsString::from(s))
 }
 
-fn setter(cap: &Cap, f: Setter, ctx: &Context) -> JsFunction {
+/// Run an engine command for a script.
+pub(crate) fn exec(cap: &Cap, command: &str, params: Value) -> JsResult<Value> {
+    cap.host.exec(command, &params).map_err(error)
+}
+
+fn getter_fn(realm: &Realm, cap: &Cap, f: Getter) -> JsFunction {
+    NativeFunction::from_copy_closure_with_captures(|_this, _args, c: &FnCap<Getter>, ctx| (c.f)(&c.cap, ctx), FnCap { cap: cap.clone(), f })
+        .to_js_function(realm)
+}
+
+fn setter_fn(realm: &Realm, cap: &Cap, f: Setter) -> JsFunction {
     NativeFunction::from_copy_closure_with_captures(
-        |_this, args, c: &SetCap, ctx| {
+        |_this, args, c: &FnCap<Setter>, ctx| {
             let v = args.first().cloned().unwrap_or_default();
             (c.f)(&c.cap, &v, ctx)?;
             Ok(JsValue::undefined())
         },
-        SetCap { cap: cap.clone(), f },
+        FnCap { cap: cap.clone(), f },
     )
-    .to_js_function(ctx.realm())
+    .to_js_function(realm)
 }
 
-fn text(s: &str) -> JsValue {
-    JsValue::from(JsString::from(s))
+fn method_fn(realm: &Realm, cap: &Cap, f: Method) -> JsFunction {
+    NativeFunction::from_copy_closure_with_captures(|_this, args, c: &FnCap<Method>, ctx| (c.f)(&c.cap, args, ctx), FnCap { cap: cap.clone(), f })
+        .to_js_function(realm)
 }
+
+/// Builds a script object property by property.
+pub(crate) struct Obj<'a> {
+    init: ObjectInitializer<'a>,
+    realm: Realm,
+    /// What the native functions work on; an object built without it holds plain values only.
+    cap: Option<Cap>,
+}
+
+impl<'a> Obj<'a> {
+    pub fn new(ctx: &'a mut Context, cap: &Cap) -> Self {
+        let realm = ctx.realm().clone();
+        Self { init: ObjectInitializer::new(ctx), realm, cap: Some(cap.clone()) }
+    }
+
+    /// An object of plain values (a colour a script made itself).
+    pub fn plain(ctx: &'a mut Context) -> Self {
+        let realm = ctx.realm().clone();
+        Self { init: ObjectInitializer::new(ctx), realm, cap: None }
+    }
+
+    pub fn value(mut self, name: &'static str, v: impl Into<JsValue>) -> Self {
+        self.init.property(JsString::from(name), v, Attribute::all());
+        self
+    }
+
+    pub fn get(mut self, name: &'static str, g: Getter) -> Self {
+        let Some(cap) = &self.cap else { return self };
+        let g = getter_fn(&self.realm, cap, g);
+        self.init.accessor(JsString::from(name), Some(g), None, Attribute::all());
+        self
+    }
+
+    pub fn get_set(self, name: &'static str, g: Getter, s: Setter) -> Self {
+        self.get_set_tag(name, 0, g, s)
+    }
+
+    /// A read-write property whose functions are told `tag`.
+    pub fn get_set_tag(mut self, name: &'static str, tag: u8, g: Getter, s: Setter) -> Self {
+        let Some(cap) = &self.cap else { return self };
+        let cap = cap.with_tag(tag);
+        let g = getter_fn(&self.realm, &cap, g);
+        let s = setter_fn(&self.realm, &cap, s);
+        self.init.accessor(JsString::from(name), Some(g), Some(s), Attribute::all());
+        self
+    }
+
+    pub fn set_only(mut self, name: &'static str, s: Setter) -> Self {
+        let Some(cap) = &self.cap else { return self };
+        let s = setter_fn(&self.realm, cap, s);
+        self.init.accessor(JsString::from(name), None, Some(s), Attribute::all());
+        self
+    }
+
+    pub fn method(mut self, name: &'static str, _length: usize, f: Method) -> Self {
+        let Some(cap) = &self.cap else { return self };
+        let m = method_fn(&self.realm, cap, f);
+        self.init.property(JsString::from(name), m, Attribute::all());
+        self
+    }
+
+    pub fn build(mut self) -> JsObject {
+        self.init.build()
+    }
+}
+
+/// A number read from a script value; NaN and infinities are errors.
+pub(crate) fn number(v: &JsValue, ctx: &mut Context) -> JsResult<f64> {
+    let n = v.to_number(ctx)?;
+    if n.is_finite() { Ok(n) } else { Err(error("a number was expected")) }
+}
+
+/// The `i`th number of an array-like script value.
+pub(crate) fn number_at(v: &JsValue, i: u32, ctx: &mut Context) -> JsResult<f64> {
+    let Some(o) = v.as_object() else { return Err(error("an array was expected")) };
+    let item = o.get(i, ctx)?;
+    number(&item, ctx)
+}
+
+pub(crate) fn array_of_numbers(values: &[f64], ctx: &mut Context) -> JsValue {
+    JsArray::from_iter(values.iter().map(|v| JsValue::from(*v)), ctx).into()
+}
+
+// ----------------------------------------------------------------------------------------------
+// Globals
+// ----------------------------------------------------------------------------------------------
 
 /// Define the globals.
 pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
@@ -85,42 +205,39 @@ pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
     );
     ctx.register_global_callable(js_string!("alert"), 1, alert)?;
 
-    let rgb = FunctionObjectBuilder::new(ctx.realm(), NativeFunction::from_fn_ptr(|_this, _args, ctx| Ok(color_object(ctx, 0.0, 0.0, 0.0).into())))
+    let rgb = FunctionObjectBuilder::new(ctx.realm(), NativeFunction::from_fn_ptr(|_this, _args, ctx| Ok(node::plain_rgb(ctx, 0, 0, 0).into())))
         .name(js_string!("RGBColor"))
         .length(0)
         .constructor(true)
         .build();
     ctx.register_global_property(js_string!("RGBColor"), rgb, Attribute::all())?;
 
-    // `app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS` is how scripts quiet
-    // dialogs; a script run from here shows none, so the values only have to exist.
-    let levels = ObjectInitializer::new(ctx)
-        .property(js_string!("DISPLAYALERTS"), 1, Attribute::all())
-        .property(js_string!("DONTDISPLAYALERTS"), 2, Attribute::all())
-        .property(js_string!("NEVERINTERACT"), 3, Attribute::all())
-        .build();
-    ctx.register_global_property(js_string!("UserInteractionLevel"), levels, Attribute::all())?;
+    // The values only have to exist and differ: a script run from here shows no dialogs, and the
+    // enumerations are read by name.
+    for (name, members) in [
+        ("UserInteractionLevel", &[("DISPLAYALERTS", "1"), ("DONTDISPLAYALERTS", "2"), ("NEVERINTERACT", "3")][..]),
+        ("Justification", &[("LEFT", "left"), ("CENTER", "center"), ("RIGHT", "right"), ("FULLJUSTIFY", "justifyAll")][..]),
+        (
+            "ZOrderMethod",
+            &[("BRINGTOFRONT", "bringToFront"), ("BRINGFORWARD", "bringForward"), ("SENDBACKWARD", "sendBackward"), ("SENDTOBACK", "sendToBack")][..],
+        ),
+    ] {
+        let mut init = ObjectInitializer::new(ctx);
+        for (key, value) in members {
+            init.property(JsString::from(*key), JsString::from(*value), Attribute::all());
+        }
+        let object = init.build();
+        ctx.register_global_property(JsString::from(name), object, Attribute::all())?;
+    }
 
-    let cap = Cap { host: host.clone(), id: 0 };
-    let documents = getter(&cap, app_documents, ctx);
-    let active = getter(&cap, app_active_document, ctx);
-    let redraw = NativeFunction::from_fn_ptr(|_this, _args, _ctx| Ok(JsValue::undefined()));
-    let app = ObjectInitializer::new(ctx)
-        .accessor(js_string!("documents"), Some(documents), None, Attribute::all())
-        .accessor(js_string!("activeDocument"), Some(active), None, Attribute::all())
-        .property(js_string!("userInteractionLevel"), 1, Attribute::all())
-        .function(redraw, js_string!("redraw"), 0)
+    let cap = Cap::new(host, None);
+    let app = Obj::new(ctx, &cap)
+        .get("documents", app_documents)
+        .get("activeDocument", app_active_document)
+        .value("userInteractionLevel", 1)
+        .method("redraw", 0, |_cap, _args, _ctx| Ok(JsValue::undefined()))
         .build();
     ctx.register_global_property(js_string!("app"), app, Attribute::all())
-}
-
-fn color_object(ctx: &mut Context, r: f64, g: f64, b: f64) -> JsObject {
-    ObjectInitializer::new(ctx)
-        .property(js_string!("typename"), js_string!("RGBColor"), Attribute::all())
-        .property(js_string!("red"), r, Attribute::all())
-        .property(js_string!("green"), g, Attribute::all())
-        .property(js_string!("blue"), b, Attribute::all())
-        .build()
 }
 
 fn app_documents(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
@@ -135,57 +252,38 @@ fn app_active_document(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
     Ok(document_object(&cap.host, ctx).into())
 }
 
+// ----------------------------------------------------------------------------------------------
+// The document
+// ----------------------------------------------------------------------------------------------
+
 fn document_object(host: &Host, ctx: &mut Context) -> JsObject {
-    let cap = Cap { host: host.clone(), id: 0 };
-    let name = getter(&cap, document_name, ctx);
-    let layers = getter(&cap, document_layers, ctx);
-    let items = getter(&cap, document_page_items, ctx);
-    let selection = getter(&cap, document_selection, ctx);
-    ObjectInitializer::new(ctx)
-        .property(js_string!("typename"), js_string!("Document"), Attribute::all())
-        .accessor(js_string!("name"), Some(name), None, Attribute::all())
-        .accessor(js_string!("layers"), Some(layers), None, Attribute::all())
-        .accessor(js_string!("pageItems"), Some(items), None, Attribute::all())
-        .accessor(js_string!("selection"), Some(selection), None, Attribute::all())
+    let cap = Cap::new(host, None);
+    Obj::new(ctx, &cap)
+        .value("typename", js_string!("Document"))
+        .get("name", |cap, _ctx| Ok(text(cap.host.document().get("title").and_then(Value::as_str).unwrap_or_default())))
+        .get("layers", document_layers)
+        .get("pageItems", document_page_items)
+        .get("pathItems", document_path_items)
+        .get("textFrames", document_text_frames)
+        .get("artboards", document_artboards)
+        .get("selection", document_selection)
         .build()
 }
 
-fn document_name(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
-    Ok(text(cap.host.document().get("title").and_then(Value::as_str).unwrap_or_default()))
-}
-
-/// The document's top-level layers, topmost first.
-fn document_layers(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let doc = cap.host.document();
-    let list = doc.get("layers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    collection(&cap.host, list.iter().collect(), ctx)
-}
-
-/// The page items on the document's layers (the layers' own top-level items).
-fn document_page_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let doc = cap.host.document();
-    let layers = doc.get("layers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    let items: Vec<&Value> = layers.iter().flat_map(|l| children(l).into_iter().filter(|c| !is_layer(c))).collect();
-    collection(&cap.host, items, ctx)
-}
-
-fn document_selection(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let doc = cap.host.document();
-    let ids: Vec<u64> = doc.get("selection").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-    let found: Vec<&Value> = ids.iter().filter_map(|id| find_node(&doc, *id)).collect();
-    collection(&cap.host, found, ctx)
-}
-
-fn is_layer(n: &Value) -> bool {
+pub(crate) fn is_layer(n: &Value) -> bool {
     n.get("kind").and_then(Value::as_str) == Some("Layer")
 }
 
-fn children(n: &Value) -> Vec<&Value> {
+pub(crate) fn children(n: &Value) -> Vec<&Value> {
     n.get("children").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default()
 }
 
+fn layer_list(doc: &Value) -> &[Value] {
+    doc.get("layers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
+}
+
 /// The node with this id anywhere in the document summary.
-fn find_node(doc: &Value, id: u64) -> Option<&Value> {
+pub(crate) fn find_node(doc: &Value, id: u64) -> Option<&Value> {
     fn walk(list: &[Value], id: u64) -> Option<&Value> {
         list.iter().find_map(|n| {
             if n.get("id").and_then(Value::as_u64) == Some(id) {
@@ -194,13 +292,27 @@ fn find_node(doc: &Value, id: u64) -> Option<&Value> {
             n.get("children").and_then(Value::as_array).and_then(|c| walk(c, id))
         })
     }
-    walk(doc.get("layers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default(), id)
+    walk(layer_list(doc), id)
 }
 
-/// A collection: an array of node objects that also answers `getByName`.
-fn collection(host: &Host, nodes: Vec<&Value>, ctx: &mut Context) -> JsResult<JsValue> {
-    let objects: Vec<JsValue> = nodes.into_iter().map(|n| node_object(host, n, ctx).into()).collect();
-    let array = JsArray::from_iter(objects, ctx);
+/// Every node below the layers, in document order.
+fn all_nodes(doc: &Value) -> Vec<&Value> {
+    fn walk<'a>(list: &'a [Value], out: &mut Vec<&'a Value>) {
+        for n in list {
+            out.push(n);
+            if let Some(c) = n.get("children").and_then(Value::as_array) {
+                walk(c, out);
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(layer_list(doc), &mut out);
+    out
+}
+
+/// A collection: an array of objects that also answers `getByName`.
+pub(crate) fn collection(objects: Vec<JsObject>, ctx: &mut Context) -> JsResult<JsObject> {
+    let array: JsObject = JsArray::from_iter(objects.into_iter().map(JsValue::from), ctx).into();
     let by_name = NativeFunction::from_fn_ptr(|this, args, ctx| {
         let wanted = args.first().cloned().unwrap_or_default().to_string(ctx)?;
         let Some(list) = this.as_object() else { return Ok(JsValue::null()) };
@@ -215,149 +327,138 @@ fn collection(host: &Host, nodes: Vec<&Value>, ctx: &mut Context) -> JsResult<Js
         }
         Err(error(format!("no item named \"{}\"", wanted.to_std_string_escaped())))
     });
-    let array: JsObject = array.into();
     array.set(js_string!("getByName"), by_name.to_js_function(ctx.realm()), false, ctx)?;
-    Ok(array.into())
+    Ok(array)
 }
 
-/// The scripting type name of an engine node kind.
-fn typename(kind: &str) -> &'static str {
-    match kind {
-        "Layer" => "Layer",
-        "Group" | "Clip Group" => "GroupItem",
-        "Compound Path" => "CompoundPathItem",
-        "Type" => "TextFrame",
-        "Image" => "RasterItem",
-        "Symbol" => "SymbolItem",
-        "Placed Document" => "PlacedItem",
-        "Mesh" => "MeshItem",
-        "Path" | "Guide" | "Rectangle" | "Ellipse" | "Polygon" | "Star" | "Rounded Rectangle" | "Line" => "PathItem",
-        _ => "PageItem",
-    }
+fn add_method(array: &JsObject, name: &'static str, cap: &Cap, f: Method, ctx: &mut Context) -> JsResult<()> {
+    let m = method_fn(ctx.realm(), cap, f);
+    array.set(JsString::from(name), m, false, ctx)?;
+    Ok(())
 }
 
-fn node_object(host: &Host, node: &Value, ctx: &mut Context) -> JsObject {
-    let id = node.get("id").and_then(Value::as_u64).unwrap_or(0);
-    let kind = node.get("kind").and_then(Value::as_str).unwrap_or("");
-    let cap = Cap { host: host.clone(), id };
-    let name = (getter(&cap, node_name, ctx), setter(&cap, set_node_name, ctx));
-    let visible = (getter(&cap, node_visible, ctx), setter(&cap, set_node_visible, ctx));
-    let hidden = (getter(&cap, node_hidden, ctx), setter(&cap, set_node_hidden, ctx));
-    let locked = (getter(&cap, node_locked, ctx), setter(&cap, set_node_locked, ctx));
-    let layers = getter(&cap, node_layers, ctx);
-    let items = getter(&cap, node_page_items, ctx);
-    let fill = (getter(&cap, node_fill, ctx), setter(&cap, set_node_fill, ctx));
-    let stroked = (getter(&cap, node_stroked, ctx), setter(&cap, set_node_stroked, ctx));
-    ObjectInitializer::new(ctx)
-        .property(js_string!("typename"), JsString::from(typename(kind)), Attribute::all())
-        .accessor(js_string!("name"), Some(name.0), Some(name.1), Attribute::all())
-        .accessor(js_string!("visible"), Some(visible.0), Some(visible.1), Attribute::all())
-        .accessor(js_string!("hidden"), Some(hidden.0), Some(hidden.1), Attribute::all())
-        .accessor(js_string!("locked"), Some(locked.0), Some(locked.1), Attribute::all())
-        .accessor(js_string!("layers"), Some(layers), None, Attribute::all())
-        .accessor(js_string!("pageItems"), Some(items), None, Attribute::all())
-        .accessor(js_string!("fillColor"), Some(fill.0), Some(fill.1), Attribute::all())
-        .accessor(js_string!("stroked"), Some(stroked.0), Some(stroked.1), Attribute::all())
+/// The scripting objects for these nodes.
+fn node_objects(host: &Host, nodes: Vec<&Value>, ctx: &mut Context) -> Vec<JsObject> {
+    nodes.into_iter().map(|n| node::node_object(host, n, ctx)).collect()
+}
+
+/// The top-level layers, topmost first.
+fn document_layers(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let objects = node_objects(&cap.host, layer_list(&doc).iter().collect(), ctx);
+    Ok(collection(objects, ctx)?.into())
+}
+
+/// The items directly on the document's layers.
+fn document_page_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let items: Vec<&Value> = layer_list(&doc).iter().flat_map(|l| children(l).into_iter().filter(|c| !is_layer(c))).collect();
+    let objects = node_objects(&cap.host, items, ctx);
+    Ok(collection(objects, ctx)?.into())
+}
+
+fn document_selection(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let ids: Vec<u64> = doc.get("selection").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+    let found: Vec<&Value> = ids.iter().filter_map(|id| find_node(&doc, *id)).collect();
+    let objects = node_objects(&cap.host, found, ctx);
+    Ok(collection(objects, ctx)?.into())
+}
+
+/// Every path in the document, with `add()` and `rectangle()`.
+fn document_path_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let paths: Vec<&Value> = all_nodes(&doc).into_iter().filter(|n| node::is_path(n)).collect();
+    let objects = node_objects(&cap.host, paths, ctx);
+    let list = collection(objects, ctx)?;
+    add_method(&list, "add", cap, |cap, _args, ctx| Ok(node::pending(&cap.host, "Path", ctx).into()), ctx)?;
+    add_method(&list, "rectangle", cap, path_rectangle, ctx)?;
+    Ok(list.into())
+}
+
+/// `rectangle(top, left, width, height)`
+fn path_rectangle(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let arg = |i: usize, ctx: &mut Context| number(args.get(i).unwrap_or(&JsValue::undefined()), ctx);
+    let (top, left, width, height) = (arg(0, ctx)?, arg(1, ctx)?, arg(2, ctx)?, arg(3, ctx)?);
+    let origin = Origin::of(&cap.host.document());
+    let (x, y) = origin.to_engine(left, top);
+    let made = exec(cap, "shape.rectangle", json!({"x": x, "y": y, "width": width, "height": height}))?;
+    let id = made.get("id").and_then(Value::as_u64).ok_or_else(|| error("the rectangle was not created"))?;
+    node::by_id(&cap.host, id, ctx)
+}
+
+/// Every text frame in the document, with `add()`.
+fn document_text_frames(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let frames: Vec<&Value> = all_nodes(&doc).into_iter().filter(|n| n.get("kind").and_then(Value::as_str) == Some("Type")).collect();
+    let objects = node_objects(&cap.host, frames, ctx);
+    let list = collection(objects, ctx)?;
+    add_method(&list, "add", cap, |cap, _args, ctx| Ok(node::pending(&cap.host, "Type", ctx).into()), ctx)?;
+    Ok(list.into())
+}
+
+// ----------------------------------------------------------------------------------------------
+// Artboards
+// ----------------------------------------------------------------------------------------------
+
+fn document_artboards(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let count = cap.host.document().get("artboards").and_then(Value::as_array).map_or(0, Vec::len);
+    let objects = (0..count).map(|i| artboard_object(&cap.host, i as u64, ctx)).collect();
+    let list = collection(objects, ctx)?;
+    add_method(&list, "add", cap, artboards_add, ctx)?;
+    Ok(list.into())
+}
+
+/// `add([left, top, right, bottom])`
+fn artboards_add(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let rect = args.first().cloned().unwrap_or_default();
+    let (left, top, right, bottom) = (number_at(&rect, 0, ctx)?, number_at(&rect, 1, ctx)?, number_at(&rect, 2, ctx)?, number_at(&rect, 3, ctx)?);
+    let origin = Origin::of(&cap.host.document());
+    let (x, y) = origin.to_engine(left, top);
+    exec(cap, "artboard.new", json!({"x": x, "y": y, "width": right - left, "height": top - bottom}))?;
+    let count = cap.host.document().get("artboards").and_then(Value::as_array).map_or(0, Vec::len);
+    let index = count.saturating_sub(1) as u64;
+    Ok(artboard_object(&cap.host, index, ctx).into())
+}
+
+fn artboard_object(host: &Host, index: u64, ctx: &mut Context) -> JsObject {
+    let cap = Cap::new(host, Some(index));
+    Obj::new(ctx, &cap)
+        .value("typename", js_string!("Artboard"))
+        .get_set("name", artboard_name, set_artboard_name)
+        .get_set("artboardRect", artboard_rect, set_artboard_rect)
         .build()
 }
 
-/// The node's current summary, or an error when it no longer exists.
-fn current(cap: &Cap) -> JsResult<Value> {
-    let doc = cap.host.document();
-    find_node(&doc, cap.id).cloned().ok_or_else(|| error("the object no longer exists"))
+fn artboard_json(cap: &Cap) -> JsResult<Value> {
+    let index = usize::try_from(cap.need()?).map_err(|_| error("no such artboard"))?;
+    cap.host
+        .document()
+        .get("artboards")
+        .and_then(Value::as_array)
+        .and_then(|a| a.get(index))
+        .cloned()
+        .ok_or_else(|| error("the artboard no longer exists"))
 }
 
-fn exec(cap: &Cap, command: &str, params: Value) -> JsResult<()> {
-    cap.host.exec(command, &params).map(|_| ()).map_err(error)
+fn artboard_name(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
+    Ok(text(artboard_json(cap)?.get("name").and_then(Value::as_str).unwrap_or_default()))
 }
 
-fn node_name(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
-    Ok(text(current(cap)?.get("name").and_then(Value::as_str).unwrap_or_default()))
-}
-
-fn set_node_name(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
+fn set_artboard_name(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
     let name = v.to_string(ctx)?.to_std_string_escaped();
-    exec(cap, "object.setProps", json!({"id": cap.id, "name": name}))
+    exec(cap, "artboard.setProps", json!({"index": cap.need()?, "name": name})).map(|_| ())
 }
 
-fn flag(cap: &Cap, key: &str) -> JsResult<bool> {
-    Ok(current(cap)?.get(key).and_then(Value::as_bool).unwrap_or(false))
+fn artboard_rect(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let origin = Origin::of(&cap.host.document());
+    let rect = origin.rect_to_script(&artboard_json(cap)?).unwrap_or([0.0; 4]);
+    Ok(array_of_numbers(&rect, ctx))
 }
 
-fn node_visible(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
-    Ok(flag(cap, "visible")?.into())
-}
-
-fn set_node_visible(cap: &Cap, v: &JsValue, _ctx: &mut Context) -> JsResult<()> {
-    exec(cap, "object.setProps", json!({"id": cap.id, "visible": v.to_boolean()}))
-}
-
-/// `hidden` is the page-item spelling of `visible`, inverted.
-fn node_hidden(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
-    Ok((!flag(cap, "visible")?).into())
-}
-
-fn set_node_hidden(cap: &Cap, v: &JsValue, _ctx: &mut Context) -> JsResult<()> {
-    exec(cap, "object.setProps", json!({"id": cap.id, "visible": !v.to_boolean()}))
-}
-
-fn node_locked(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
-    Ok(flag(cap, "locked")?.into())
-}
-
-fn set_node_locked(cap: &Cap, v: &JsValue, _ctx: &mut Context) -> JsResult<()> {
-    exec(cap, "object.setProps", json!({"id": cap.id, "locked": v.to_boolean()}))
-}
-
-/// The sublayers of a layer.
-fn node_layers(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let node = current(cap)?;
-    collection(&cap.host, children(&node).into_iter().filter(|c| is_layer(c)).collect(), ctx)
-}
-
-/// The items directly inside a layer or group.
-fn node_page_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let node = current(cap)?;
-    collection(&cap.host, children(&node).into_iter().filter(|c| !is_layer(c)).collect(), ctx)
-}
-
-fn node_fill(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let node = current(cap)?;
-    let label = node.get("fill").and_then(Value::as_str).unwrap_or("None");
-    let hex = label.strip_prefix('#').filter(|h| h.len() >= 6);
-    let channel = |i: usize| hex.and_then(|h| h.get(i..i + 2)).and_then(|p| u8::from_str_radix(p, 16).ok()).map(f64::from);
-    match (channel(0), channel(2), channel(4)) {
-        (Some(r), Some(g), Some(b)) => Ok(color_object(ctx, r, g, b).into()),
-        _ => Ok(ObjectInitializer::new(ctx).property(js_string!("typename"), js_string!("NoColor"), Attribute::all()).build().into()),
-    }
-}
-
-fn set_node_fill(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
-    let Some(obj) = v.as_object() else { return Err(error("fillColor takes a color")) };
-    let kind = obj.get(js_string!("typename"), ctx)?.to_string(ctx)?.to_std_string_escaped();
-    match kind.as_str() {
-        "NoColor" => exec(cap, "paint.setFill", json!({"ids": [cap.id], "none": true})),
-        "RGBColor" => {
-            let mut channel = |key: JsString| -> JsResult<u8> {
-                let n = obj.get(key, ctx)?.to_number(ctx)?;
-                Ok(if n.is_finite() { n.round().clamp(0.0, 255.0) as u8 } else { 0 })
-            };
-            let (r, g, b) = (channel(js_string!("red"))?, channel(js_string!("green"))?, channel(js_string!("blue"))?);
-            exec(cap, "paint.setFill", json!({"ids": [cap.id], "color": format!("#{r:02x}{g:02x}{b:02x}")}))
-        }
-        other => Err(error(format!("fillColor: {other} is not supported yet"))),
-    }
-}
-
-fn node_stroked(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
-    let node = current(cap)?;
-    Ok((node.get("stroke").and_then(Value::as_str).unwrap_or("None") != "None").into())
-}
-
-/// Only switching a stroke off can be done without knowing which colour a new stroke takes.
-fn set_node_stroked(cap: &Cap, v: &JsValue, _ctx: &mut Context) -> JsResult<()> {
-    if v.to_boolean() {
-        return Ok(());
-    }
-    exec(cap, "paint.setStroke", json!({"ids": [cap.id], "none": true}))
+fn set_artboard_rect(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
+    let (left, top, right, bottom) = (number_at(v, 0, ctx)?, number_at(v, 1, ctx)?, number_at(v, 2, ctx)?, number_at(v, 3, ctx)?);
+    let origin = Origin::of(&cap.host.document());
+    let (x, y) = origin.to_engine(left, top);
+    exec(cap, "artboard.setProps", json!({"index": cap.need()?, "x": x, "y": y, "width": right - left, "height": top - bottom})).map(|_| ())
 }

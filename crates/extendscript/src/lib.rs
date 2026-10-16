@@ -14,7 +14,9 @@
 #![forbid(unsafe_code)]
 
 mod dom;
+mod geom;
 mod host;
+mod node;
 
 use boa_engine::{Context, Source};
 use vectorcraft_engine::Session;
@@ -150,5 +152,167 @@ mod tests {
         let mut s = session_with_document();
         let err = run(&mut s, "app.activeDocument.layers[0].fillColor = 5;").unwrap_err();
         assert!(matches!(err, ScriptError::Script { .. }), "{err:?}");
+    }
+
+    fn rect(s: &mut Session, x: f64, y: f64, w: f64, h: f64) -> u64 {
+        s.execute("shape.rectangle", &json!({"x": x, "y": y, "width": w, "height": h})).unwrap()["id"].as_u64().unwrap()
+    }
+
+    #[test]
+    fn bounds_are_left_top_right_bottom_with_y_up_and_position_follows_them() {
+        let mut s = session_with_document();
+        rect(&mut s, 10.0, 20.0, 40.0, 30.0);
+        let out = run(
+            &mut s,
+            "var it = app.activeDocument.layers[0].pageItems[0];
+             var b = it.geometricBounds;
+             var first = [b[2] - b[0], b[1] - b[3], it.width, it.height].join(',');
+             it.left = 5; it.top = 100;
+             var c = it.geometricBounds;
+             first + '|' + c.join(',')",
+        )
+        .unwrap();
+        assert_eq!(out.value, "40,30,40,30|5,100,45,70");
+    }
+
+    #[test]
+    fn translate_moves_up_for_a_positive_y() {
+        let mut s = session_with_document();
+        rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+        let out = run(
+            &mut s,
+            "var it = app.activeDocument.layers[0].pageItems[0];
+             var t0 = it.top; it.translate(3, 7);
+             (it.top - t0) + ',' + it.left",
+        )
+        .unwrap();
+        let (dy, left) = out.value.split_once(',').unwrap();
+        assert_eq!(dy, "7");
+        assert!(left.parse::<f64>().is_ok(), "{}", out.value);
+    }
+
+    #[test]
+    fn new_paths_take_points_and_a_stroke_set_through_a_live_colour() {
+        let mut s = session_with_document();
+        let out = run(
+            &mut s,
+            "var doc = app.activeDocument;
+             var line = doc.pathItems.add();
+             line.setEntirePath([[10, 10], [60, 10]]);
+             line.strokeColor = new RGBColor();
+             line.strokeColor.red = 237; line.strokeColor.green = 30; line.strokeColor.blue = 121;
+             line.strokeWidth = 2;
+             line.filled = false;
+             [line.typename, line.width, line.strokeColor.red, line.strokeWidth, line.filled, line.stroked].join(',')",
+        )
+        .unwrap();
+        assert_eq!(out.value, "PathItem,50,237,2,false,true");
+        let doc = vectorcraft_engine::inspect::document(&s);
+        let item = &doc["layers"][0]["children"][0];
+        assert_eq!(item["stroke"], "#ed1e79");
+        assert_eq!(item["fill"], "None");
+    }
+
+    #[test]
+    fn text_frames_get_contents_style_and_position() {
+        let mut s = session_with_document();
+        let out = run(
+            &mut s,
+            "var doc = app.activeDocument;
+             var t = doc.textFrames.add();
+             t.contents = 'abc';
+             t.textRange.characterAttributes.size = 18;
+             t.textRange.characterAttributes.fillColor = new RGBColor();
+             t.textRange.characterAttributes.fillColor.red = 255;
+             t.textRange.paragraphAttributes.justification = Justification.CENTER;
+             t.left = 40; t.top = 90;
+             t.contents + ',' + doc.textFrames.length + ',' + t.left + ',' + t.top",
+        )
+        .unwrap();
+        assert_eq!(out.value, "abc,1,40,90");
+        let doc = vectorcraft_engine::inspect::document(&s);
+        assert_eq!(doc["layers"][0]["children"][0]["fill"], "#ff0000");
+    }
+
+    #[test]
+    fn rotating_text_keeps_it_in_the_document() {
+        let mut s = session_with_document();
+        let out = run(
+            &mut s,
+            "var t = app.activeDocument.textFrames.add(); t.contents = 'xyz';
+             var w = t.width, h = t.height; t.rotate(90);
+             (Math.abs(t.width - h) < 0.01 && Math.abs(t.height - w) < 0.01)",
+        )
+        .unwrap();
+        assert_eq!(out.value, "true");
+    }
+
+    #[test]
+    fn artboards_are_added_read_and_renamed_in_script_coordinates() {
+        let mut s = session_with_document();
+        let out = run(
+            &mut s,
+            "var doc = app.activeDocument;
+             var n = doc.artboards.length;
+             var ab = doc.artboards.add([100, 300, 400, 100]);
+             ab.name = 'novo';
+             var r = doc.artboards[doc.artboards.length - 1].artboardRect;
+             (doc.artboards.length - n) + '|' + r.join(',') + '|' + doc.artboards[doc.artboards.length - 1].name",
+        )
+        .unwrap();
+        assert_eq!(out.value, "1|100,300,400,100|novo");
+    }
+
+    #[test]
+    fn a_rectangle_can_be_sent_to_the_back() {
+        let mut s = session_with_document();
+        rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+        run(
+            &mut s,
+            "var doc = app.activeDocument;
+             var r = doc.pathItems.rectangle(200, 0, 50, 50);
+             r.fillColor = new RGBColor();
+             r.filled = true;
+             r.zOrder(ZOrderMethod.SENDTOBACK);",
+        )
+        .unwrap();
+        let doc = vectorcraft_engine::inspect::document(&s);
+        // The engine lists the top of the stack first: the new rectangle is last.
+        let kids = doc["layers"][0]["children"].as_array().unwrap();
+        assert_eq!(kids.len(), 2);
+        assert_eq!(kids[1]["fill"], "#000000", "{kids:?}");
+    }
+
+    #[test]
+    fn dimension_guides_script_end_to_end() {
+        // A script of the shape the production tools have: measure the selection, draw a guide
+        // line and a label beside it in centimetres, then add an artboard around the result.
+        let mut s = session_with_document();
+        let id = rect(&mut s, 100.0, 100.0, 85.04, 56.69);
+        s.execute("select.set", &json!({"ids": [id]})).unwrap();
+        let out = run(
+            &mut s,
+            "var doc = app.activeDocument;
+             var sel = doc.selection;
+             var cm = 28.3464567;
+             for (var i = 0; i < sel.length; i++) {
+                 var b = sel[i].geometricBounds;
+                 var width = b[2] - b[0];
+                 var line = doc.pathItems.add();
+                 line.setEntirePath([[b[0], b[1] - cm], [b[0] + width, b[1] - cm]]);
+                 line.strokeColor = new RGBColor();
+                 line.strokeColor.red = 237;
+                 line.filled = false;
+                 var label = doc.textFrames.add();
+                 label.contents = (width / cm).toFixed(1) + ' cm';
+                 label.top = b[1] - cm - 5;
+                 label.left = b[0];
+                 var lb = label.geometricBounds;
+                 doc.artboards.add([Math.min(b[0], lb[0]), Math.max(b[1], lb[1]), Math.max(b[2], lb[2]), Math.min(b[3] - cm, lb[3])]);
+             }
+             doc.textFrames[0].contents + ',' + doc.pathItems.length + ',' + doc.artboards.length",
+        )
+        .unwrap();
+        assert_eq!(out.value, "3.0 cm,2,2");
     }
 }

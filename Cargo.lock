@@ -5164,6 +5164,7 @@ dependencies = [
  "vectorcraft-color",
  "vectorcraft-doc",
  "vectorcraft-engine",
+ "vectorcraft-extendscript",
  "vectorcraft-format",
  "vectorcraft-geom",
  "vectorcraft-mcp",
