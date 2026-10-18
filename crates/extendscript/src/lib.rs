@@ -315,4 +315,30 @@ mod tests {
         .unwrap();
         assert_eq!(out.value, "3.0 cm,2,2");
     }
+
+    #[test]
+    fn painting_from_a_script_leaves_the_new_art_defaults_alone() {
+        let mut s = session_with_document();
+        let before = rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+        run(
+            &mut s,
+            "var doc = app.activeDocument;
+             var line = doc.pathItems.add();
+             line.setEntirePath([[0, 0], [30, 0]]);
+             line.strokeColor = new RGBColor();
+             line.strokeColor.red = 237;
+             line.strokeWidth = 5;
+             var r = doc.pathItems.rectangle(100, 0, 20, 20);
+             r.fillColor = new RGBColor();",
+        )
+        .unwrap();
+        let after = rect(&mut s, 50.0, 0.0, 10.0, 10.0);
+        let doc = vectorcraft_engine::inspect::document(&s);
+        let node = |id: u64| doc["layers"][0]["children"].as_array().unwrap().iter().find(|n| n["id"] == id).unwrap().clone();
+        // A rectangle the script made, and one made after it, take what a rectangle made before took.
+        let (b, a) = (node(before), node(after));
+        assert_eq!((&a["stroke"], &a["strokeWidth"]), (&b["stroke"], &b["strokeWidth"]), "{a} {b}");
+        let made = doc["layers"][0]["children"].as_array().unwrap().iter().find(|n| n["fill"] == "#000000" && n["id"] != before).unwrap();
+        assert_eq!((&made["stroke"], &made["strokeWidth"]), (&b["stroke"], &b["strokeWidth"]), "{made} {b}");
+    }
 }

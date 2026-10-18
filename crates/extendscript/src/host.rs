@@ -33,9 +33,16 @@ impl Host {
     }
 
     /// Run an engine command; the error is the engine's message.
+    ///
+    /// Painting an object from a script does not change the fill and stroke new art takes (the
+    /// toolbar's defaults), as it does when the user paints the selection: they are put back.
     pub fn exec(&self, command: &str, params: &Value) -> Result<Value, String> {
         let mut st = self.state.try_borrow_mut().map_err(|_| "the document is busy".to_string())?;
-        st.session.execute(command, params).map_err(|e| e.to_string())
+        let (defaults, fill_active) = (st.session.paint.clone(), st.session.fill_active);
+        let result = st.session.execute(command, params).map_err(|e| e.to_string());
+        st.session.paint = defaults;
+        st.session.fill_active = fill_active;
+        result
     }
 
     /// The active document as the engine summarises it (`Null` without one).
