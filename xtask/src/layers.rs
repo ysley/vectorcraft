@@ -85,6 +85,8 @@ pub const INTRA_LAYER_ORDER: &[&[&str]] = &[
     &["three-d", "effects"],
     // Inflate cuts its surface's grid cells to the shape with Pathfinder's booleans.
     &["pathops", "three-d"],
+    // File › Scripts › Run Script… draws the dialogs a script shows and answers its commands.
+    &["extendscript", "ui-egui"],
 ];
 
 fn intra_layer_allowed(from: &str, to: &str) -> bool {

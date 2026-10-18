@@ -4999,3 +4999,6 @@ mark-style	Japanese	Japonské
 	Movie Clip	Filmový klip
 @msg	name is empty	název je prázdný
 @msg	no symbol named `{n}`	žádný symbol s názvem `{n}`
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Spustit skript
+	Run Script…	Spustit skript…

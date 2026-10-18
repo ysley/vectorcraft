@@ -23,6 +23,7 @@ pub mod control;
 pub mod credits;
 pub mod cursors;
 pub mod dialogs;
+pub mod script_run;
 pub mod dock;
 mod edit_toolbar;
 pub mod find_font;
@@ -136,6 +137,8 @@ mod tests_saveext;
 mod tests_screenmode;
 #[cfg(test)]
 mod tests_script_check;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests_script_run;
 #[cfg(test)]
 mod tests_scrub;
 #[cfg(test)]
@@ -357,6 +360,8 @@ pub struct Perf {
 
 pub struct VectorcraftApp {
     pub session: Session,
+    /// The script File › Scripts › Run Script… is running ([`script_run`]).
+    pub script_run: Option<script_run::Running>,
     pub ui: UiState,
     pub views: Vec<View>,
     pub services: Services,
@@ -507,6 +512,7 @@ impl VectorcraftApp {
             last_effect: None,
             run_count: 0,
             clipboard_out: None,
+            script_run: None,
             clipboard_published: None,
             clipboard_in: None,
             clipboard_publishing: Default::default(),
@@ -1379,6 +1385,7 @@ impl VectorcraftApp {
         dock::floating_panel(self, &ctx);
         floating::show(self, &ctx);
         panels::library_panel::show_window(self, &ctx);
+        script_run::frame(self, &ctx);
         dialogs::show(self, &ctx);
         palette::show(self, &ctx);
         if self.custom_titlebar {

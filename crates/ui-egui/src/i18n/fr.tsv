@@ -4998,3 +4998,6 @@ theme	Appearance	Apparence
 	Movie Clip	Clip
 @msg	name is empty	le nom est vide
 @msg	no symbol named `{n}`	aucun symbole nommé `{n}`
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Exécuter le script
+	Run Script…	Exécuter le script…

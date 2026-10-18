@@ -4966,3 +4966,6 @@ imageTrace	Outline	Körvonal
 	Movie Clip	Mozgóklip
 @msg	name is empty	a név üres
 @msg	no symbol named `{n}`	nincs `{n}` nevű szimbólum
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Szkript futtatása
+	Run Script…	Szkript futtatása…

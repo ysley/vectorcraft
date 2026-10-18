@@ -9,8 +9,18 @@ use vectorcraft_engine::{Session, inspect};
 use crate::ui::{Dialog, Event, Presenter};
 
 /// What the script and its host exchange while it runs.
+/// Where a script's commands and reads go when the document is not in this thread: a link to the
+/// thread that owns it ([`crate::remote`]).
+pub(crate) trait Backend {
+    fn execute(&mut self, command: &str, params: &Value) -> Result<Value, String>;
+    fn document(&mut self) -> Value;
+    /// Show the script's `alert()` and wait for it to be dismissed.
+    fn alert(&mut self, _text: &str) {}
+}
+
 pub(crate) struct State {
     pub session: Session,
+    pub backend: Option<Box<dyn Backend>>,
     /// The text of every `alert()` the script made, in order.
     pub alerts: Vec<String>,
     /// Whoever answers the dialogs the script shows (none: showing one is an error).
@@ -27,7 +37,7 @@ pub(crate) struct Host {
 
 impl Host {
     pub fn new(session: Session) -> Self {
-        Self { state: Rc::new(RefCell::new(State { session, alerts: vec![], presenter: None })) }
+        Self { state: Rc::new(RefCell::new(State { session, backend: None, alerts: vec![], presenter: None })) }
     }
 
     pub fn set_presenter(&self, presenter: Option<Box<dyn Presenter>>) {
@@ -57,7 +67,24 @@ impl Host {
         event
     }
 
+    /// A host whose document lives elsewhere.
+    pub fn remote(backend: Box<dyn Backend>) -> Self {
+        let host = Self::new(Session::new());
+        if let Ok(mut st) = host.state.try_borrow_mut() {
+            st.backend = Some(backend);
+        }
+        host
+    }
+
     pub fn alert(&self, text: String) {
+        // The backend may wait for the user: hold no borrow while it does.
+        let taken = self.state.try_borrow_mut().ok().and_then(|mut st| st.backend.take());
+        if let Some(mut b) = taken {
+            b.alert(&text);
+            if let Ok(mut st) = self.state.try_borrow_mut() {
+                st.backend = Some(b);
+            }
+        }
         if let Ok(mut st) = self.state.try_borrow_mut() {
             st.alerts.push(text);
         }
@@ -69,17 +96,19 @@ impl Host {
     /// toolbar's defaults), as it does when the user paints the selection: they are put back.
     pub fn exec(&self, command: &str, params: &Value) -> Result<Value, String> {
         let mut st = self.state.try_borrow_mut().map_err(|_| "the document is busy".to_string())?;
-        let (defaults, fill_active) = (st.session.paint.clone(), st.session.fill_active);
-        let result = st.session.execute(command, params).map_err(|e| e.to_string());
-        st.session.paint = defaults;
-        st.session.fill_active = fill_active;
-        result
+        if let Some(b) = st.backend.as_mut() {
+            return b.execute(command, params);
+        }
+        execute_on(&mut st.session, command, params)
     }
 
     /// The active document as the engine summarises it (`Null` without one).
     pub fn document(&self) -> Value {
-        match self.state.try_borrow() {
-            Ok(st) => inspect::document(&st.session),
+        match self.state.try_borrow_mut() {
+            Ok(mut st) => match st.backend.as_mut() {
+                Some(b) => b.document(),
+                None => inspect::document(&st.session),
+            },
             Err(_) => Value::Null,
         }
     }
@@ -91,4 +120,21 @@ impl Host {
         let session = std::mem::replace(&mut st.session, Session::new());
         Ok((session, std::mem::take(&mut st.alerts)))
     }
+}
+
+/// Run an engine command for a script; the error is the engine's message.
+///
+/// Painting an object from a script does not change the fill and stroke new art takes (the
+/// toolbar's defaults), as it does when the user paints the selection: they are put back.
+pub fn execute_on(session: &mut Session, command: &str, params: &Value) -> Result<Value, String> {
+    let (defaults, fill_active) = (session.paint.clone(), session.fill_active);
+    let result = session.execute(command, params).map_err(|e| e.to_string());
+    session.paint = defaults;
+    session.fill_active = fill_active;
+    result
+}
+
+/// The document a script sees: the engine's summary of the active one.
+pub fn document_of(session: &Session) -> Value {
+    inspect::document(session)
 }

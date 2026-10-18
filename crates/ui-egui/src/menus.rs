@@ -852,6 +852,12 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
         "{path? | data? | dataBase64?, name?, includes?: true with a path} check a script written for the reference app without running it (script.check; with a path, the files its #include lines name are checked too) and show the report (dialog `scriptCheck`: `report`, script.check's result; Copy Report copies it as JSON); without a file pick one (the web opens the browser's file picker; File › Open of a .jsx, .jsxinc or .jsxbin file shows the report too)",
     ),
     (
+        "ui.runScript",
+        "Run Script…",
+        "",
+        "{path? | data?, name?} run a script written for the reference app (.jsx) on the open documents, on a thread of its own: the artwork changes as it works and its dialogs (Window) are drawn here; without a file pick one. One script runs at a time",
+    ),
+    (
         "ui.perspectiveGridDialog",
         "Define Perspective Grid…",
         "",
@@ -1622,6 +1628,7 @@ pub fn run_ui_command(app: &mut VectorcraftApp, id: &str, p: &Value) -> Option<R
         "plugin.dialog" => crate::dialogs::plugin::open(app, p),
         "ui.installPlugin" => io::install_plugin(app, s("path")),
         "ui.checkScript" => crate::dialogs::script_check::command(app, p),
+        "ui.runScript" => crate::script_run::command(app, p),
         "ui.perspectiveGridDialog" => crate::dialogs::perspective_grid::open(app),
         "ui.perspectivePresetsDialog" => {
             crate::dialogs::perspective_presets::open(app, s("selected").as_deref());
@@ -2297,7 +2304,7 @@ pub fn menu_tree_named(english_names: bool) -> Vec<(&'static str, Vec<Item>)> {
                 c("Export Selection…", "file.exportSelection"),
                 Sep,
                 c("Package…", "ui.packageDialog"),
-                sub("Scripts", vec![c("Check Script…", "ui.checkScript"), todos("Other Script…", "Cmd+F12")]),
+                sub("Scripts", vec![c("Run Script…", "ui.runScript"), c("Check Script…", "ui.checkScript")]),
                 Sep,
                 c("Document Setup…", "file.documentSetup"),
                 sub(

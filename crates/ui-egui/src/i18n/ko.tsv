@@ -4540,3 +4540,6 @@ lighting	Light	광원
 	Movie Clip	무비 클립
 @msg	name is empty	이름이 비어 있습니다
 @msg	no symbol named `{n}`	이름이 `{n}`인 심볼이 없습니다
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	스크립트 실행
+	Run Script…	스크립트 실행…

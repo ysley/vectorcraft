@@ -4572,3 +4572,6 @@ lighting	Light	Свет
 	Movie Clip	Видеоклип
 @msg	name is empty	имя пустое
 @msg	no symbol named `{n}`	нет символа с именем `{n}`
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Запустить скрипт
+	Run Script…	Запустить скрипт…

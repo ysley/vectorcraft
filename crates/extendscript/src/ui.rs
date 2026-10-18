@@ -34,6 +34,8 @@ pub struct Dialog {
 /// One widget as it is when the dialog is snapshotted.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Widget {
+    /// Hidden by the script (`visible = false`).
+    pub hidden: bool,
     /// `window`, `panel`, `group`, `statictext`, `edittext`, `checkbox`, `radiobutton`, `button`,
     /// `dropdownlist`, `listbox`, `slider` or `progressbar`.
     pub kind: String,
@@ -141,6 +143,7 @@ fn snapshot_widget(o: &JsObject, depth: usize, ctx: &mut Context) -> JsResult<Wi
         }
     }
     Ok(Widget {
+        hidden: !bool_prop(o, js_string!("visible"), true, ctx)?,
         kind,
         text: string_prop(o, js_string!("text"), ctx)?,
         value: !numeric && bool_prop(o, js_string!("value"), false, ctx)?,

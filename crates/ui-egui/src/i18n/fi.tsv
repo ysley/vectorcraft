@@ -4963,3 +4963,6 @@ mark-style	Japanese	Japanilainen
 	Movie Clip	Elokuvaleike
 @msg	name is empty	nimi on tyhjä
 @msg	no symbol named `{n}`	symbolia nimeltä `{n}` ei ole
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Suorita komentosarja
+	Run Script…	Suorita komentosarja…

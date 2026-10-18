@@ -5556,6 +5556,7 @@ dependencies = [
  "vectorcraft-effects",
  "vectorcraft-engine",
  "vectorcraft-eps",
+ "vectorcraft-extendscript",
  "vectorcraft-format",
  "vectorcraft-geom",
  "vectorcraft-pdf",

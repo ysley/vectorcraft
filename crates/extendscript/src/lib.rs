@@ -18,8 +18,10 @@ pub mod driver;
 mod geom;
 mod host;
 mod node;
+pub mod remote;
 pub mod ui;
 
+pub use host::{document_of, execute_on};
 pub use ui::{Dialog, Event, Presenter, Widget};
 
 use boa_engine::{Context, Source};
@@ -67,7 +69,26 @@ pub fn run_with(session: &mut Session, source: &str, presenter: Option<Box<dyn P
     }
 }
 
+/// Run `source` against a document that lives elsewhere ([`remote`]); the script's alerts go to
+/// the backend as they happen.
+pub(crate) fn run_remote(source: &str, backend: Box<dyn host::Backend>, presenter: Box<dyn Presenter>) -> Result<Outcome, ScriptError> {
+    let host = Host::remote(backend);
+    host.set_presenter(Some(presenter));
+    let result = evaluate(&host, source);
+    let (_, alerts) = host.take().map_err(ScriptError::Internal)?;
+    match result {
+        Ok(value) => Ok(Outcome { alerts, value }),
+        Err(message) => Err(ScriptError::Script { message, alerts }),
+    }
+}
+
 fn evaluate(host: &Host, source: &str) -> Result<String, String> {
+    // A bug in the host must not take the document down with it.
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| evaluate_inner(host, source)))
+        .unwrap_or_else(|_| Err("internal error: the script host failed".to_string()))
+}
+
+fn evaluate_inner(host: &Host, source: &str) -> Result<String, String> {
     let mut ctx = Context::default();
     dom::install(host, &mut ctx).map_err(|e| e.to_string())?;
     let value = ctx.eval(Source::from_bytes(source)).map_err(|e| e.to_string())?;

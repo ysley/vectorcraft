@@ -4981,3 +4981,6 @@ theme	Appearance	Външен вид
 	Movie Clip	Филмов клип
 @msg	name is empty	името е празно
 @msg	no symbol named `{n}`	няма символ с име `{n}`
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Изпълни скрипт
+	Run Script…	Изпълни скрипт…

@@ -4106,3 +4106,6 @@ lighting	Light	光源
 	Movie Clip	影片剪辑
 @msg	name is empty	名称为空
 @msg	no symbol named `{n}`	没有名为 `{n}` 的符号
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	运行脚本
+	Run Script…	运行脚本…

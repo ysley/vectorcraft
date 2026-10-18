@@ -4617,3 +4617,6 @@ lighting	Light	ライト
 	Movie Clip	ムービークリップ
 @msg	name is empty	名前が空です
 @msg	no symbol named `{n}`	`{n}` という名前のシンボルはありません
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	スクリプトを実行
+	Run Script…	スクリプトを実行…

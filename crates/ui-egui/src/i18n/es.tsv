@@ -4941,3 +4941,6 @@ mark-style	Japanese	Japonesas
 	Movie Clip	Clip de película
 @msg	name is empty	el nombre está vacío
 @msg	no symbol named `{n}`	no hay ningún símbolo llamado `{n}`
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Ejecutar script
+	Run Script…	Ejecutar script…

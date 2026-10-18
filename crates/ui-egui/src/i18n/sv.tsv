@@ -4955,3 +4955,6 @@ theme	Appearance	Utseende
 	Movie Clip	Filmklipp
 @msg	name is empty	namnet är tomt
 @msg	no symbol named `{n}`	ingen symbol med namnet `{n}`
+# Run Script (File › Scripts): runs a script written for the reference app.
+	Run Script	Kör skript
+	Run Script…	Kör skript…

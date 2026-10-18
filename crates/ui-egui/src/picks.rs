@@ -62,6 +62,7 @@ const DOCUMENT_FREE: &[&str] = &[
     "file.newFromTemplate",
     "ui.installPlugin",
     "ui.checkScript",
+    "ui.runScript",
     "window.swatchLibrary.other",
     "window.graphicStyleLibrary.other",
     "shortcuts.import",
