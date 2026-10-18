@@ -16,8 +16,10 @@
 mod dom;
 pub mod driver;
 mod geom;
+mod fs;
 mod host;
 mod node;
+mod preprocess;
 pub mod remote;
 pub mod ui;
 
@@ -57,8 +59,15 @@ pub fn run(session: &mut Session, source: &str) -> Result<Outcome, ScriptError> 
 
 /// Like [`run`], with someone to answer the dialogs the script shows.
 pub fn run_with(session: &mut Session, source: &str, presenter: Option<Box<dyn Presenter>>) -> Result<Outcome, ScriptError> {
+    run_file(session, source, None, presenter)
+}
+
+/// Like [`run_with`] for a script that came from `file`: `$.fileName` names it and its `#include`
+/// lines are found next to it.
+pub fn run_file(session: &mut Session, source: &str, file: Option<&std::path::Path>, presenter: Option<Box<dyn Presenter>>) -> Result<Outcome, ScriptError> {
     let host = Host::new(std::mem::replace(session, Session::new()));
     host.set_presenter(presenter);
+    host.set_file(file.map(std::path::Path::to_path_buf));
     let result = evaluate(&host, source);
     // The script is over: take the session back whatever happened.
     let (back, alerts) = host.take().map_err(ScriptError::Internal)?;
@@ -71,8 +80,9 @@ pub fn run_with(session: &mut Session, source: &str, presenter: Option<Box<dyn P
 
 /// Run `source` against a document that lives elsewhere ([`remote`]); the script's alerts go to
 /// the backend as they happen.
-pub(crate) fn run_remote(source: &str, backend: Box<dyn host::Backend>, presenter: Box<dyn Presenter>) -> Result<Outcome, ScriptError> {
+pub(crate) fn run_remote(source: &str, file: Option<std::path::PathBuf>, backend: Box<dyn host::Backend>, presenter: Box<dyn Presenter>) -> Result<Outcome, ScriptError> {
     let host = Host::remote(backend);
+    host.set_file(file);
     host.set_presenter(Some(presenter));
     let result = evaluate(&host, source);
     let (_, alerts) = host.take().map_err(ScriptError::Internal)?;
@@ -89,6 +99,7 @@ fn evaluate(host: &Host, source: &str) -> Result<String, String> {
 }
 
 fn evaluate_inner(host: &Host, source: &str) -> Result<String, String> {
+    let source = &preprocess::preprocess(source, host.script_dir().as_deref())?;
     let mut ctx = Context::default();
     dom::install(host, &mut ctx).map_err(|e| e.to_string())?;
     let value = ctx.eval(Source::from_bytes(source)).map_err(|e| e.to_string())?;

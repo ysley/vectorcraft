@@ -854,7 +854,7 @@ pub const UI_COMMANDS: &[(&str, &str, &str, &str)] = &[
     (
         "ui.runScript",
         "Run Script…",
-        "",
+        "Cmd+F12",
         "{path? | data?, name?} run a script written for the reference app (.jsx) on the open documents, on a thread of its own: the artwork changes as it works and its dialogs (Window) are drawn here; without a file pick one. One script runs at a time",
     ),
     (

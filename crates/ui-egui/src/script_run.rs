@@ -30,12 +30,12 @@ mod native {
         edits: HashMap<Vec<usize>, String>,
     }
 
-    pub(super) fn start(app: &mut VectorcraftApp, source: String, name: String) -> Result<(), String> {
+    pub(super) fn start(app: &mut VectorcraftApp, source: String, name: String, file: Option<std::path::PathBuf>) -> Result<(), String> {
         if app.script_run.is_some() {
             return Err("A script is already running".into());
         }
         let source = source.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(source);
-        let job = remote::spawn(source, || {}).map_err(|e| e.to_string())?;
+        let job = remote::spawn(source, file, || {}).map_err(|e| e.to_string())?;
         app.script_run = Some(Running { job, name: name.clone(), queue: Default::default(), edits: HashMap::new() });
         app.status(format!("Running {name}…"));
         Ok(())
@@ -144,6 +144,7 @@ mod native {
                     ui.vertical(|ui| children(ui, w, path, events, edits));
                 }
             }
+            "statictext" if !w.shapes.is_empty() => paint_shapes(ui, w),
             "statictext" => {
                 ui.label(&w.text);
             }
@@ -205,6 +206,42 @@ mod native {
         }
     }
 
+    fn rgba(c: [f32; 4]) -> egui::Color32 {
+        let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+        egui::Color32::from_rgba_unmultiplied(b(c[0]), b(c[1]), b(c[2]), b(c[3]))
+    }
+
+    /// A widget the script paints itself (`onDraw`): its shapes, in a box of the size it asked for.
+    fn paint_shapes(ui: &mut Ui, w: &Widget) {
+        let [sw, sh] = w.size;
+        let (sw, sh) = (if sw > 0.0 { sw } else { 22.0 } as f32, if sh > 0.0 { sh } else { 22.0 } as f32);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(sw, sh), egui::Sense::hover());
+        let painter = ui.painter_at(rect);
+        let at = |x: f64, y: f64| rect.min + egui::vec2(x as f32, y as f32);
+        for s in &w.shapes {
+            let [x, y, width, height] = s.rect;
+            let stroke = s.stroke.map(|c| egui::Stroke::new(s.width.max(0.5) as f32, rgba(c))).unwrap_or(egui::Stroke::NONE);
+            let fill = s.fill.map(rgba).unwrap_or(egui::Color32::TRANSPARENT);
+            match s.kind.as_str() {
+                "ellipse" => {
+                    let r = egui::Rect::from_min_size(at(x, y), egui::vec2(width as f32, height as f32));
+                    painter.circle(r.center(), r.width().min(r.height()) / 2.0, fill, stroke);
+                }
+                "rect" => {
+                    let r = egui::Rect::from_min_size(at(x, y), egui::vec2(width as f32, height as f32));
+                    painter.rect(r, 0.0, fill, stroke, egui::StrokeKind::Inside);
+                }
+                "poly" => {
+                    let pts: Vec<egui::Pos2> = s.points.iter().map(|p| at(p[0], p[1])).collect();
+                    if pts.len() >= 3 {
+                        painter.add(egui::Shape::convex_polygon(pts, fill, stroke));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub(super) fn read_source(app: &VectorcraftApp, path: &str) -> Result<String, String> {
         let bytes = match app.services.read.as_ref() {
             Some(read) => read(path)?,
@@ -251,7 +288,7 @@ pub(crate) fn command(app: &mut VectorcraftApp, p: &Value) -> Result<Value, Stri
     }
     if let Some(data) = p.get("data").and_then(Value::as_str) {
         let name = p.get("name").and_then(Value::as_str).unwrap_or("Script.jsx").to_string();
-        native::start(app, data.to_string(), name.clone())?;
+        native::start(app, data.to_string(), name.clone(), None)?;
         return Ok(json!({ "running": name }));
     }
     let path = match p.get("path").and_then(Value::as_str) {
@@ -260,7 +297,7 @@ pub(crate) fn command(app: &mut VectorcraftApp, p: &Value) -> Result<Value, Stri
     };
     let name = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()).unwrap_or(&path).to_string();
     let source = native::read_source(app, &path)?;
-    native::start(app, source, name.clone())?;
+    native::start(app, source, name.clone(), Some(std::path::PathBuf::from(&path)))?;
     Ok(json!({ "running": name }))
 }
 

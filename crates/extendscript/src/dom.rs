@@ -37,15 +37,27 @@ pub(crate) struct Cap {
     /// Which of several related properties a shared function serves.
     #[unsafe_ignore_trace]
     pub tag: u8,
+    /// State of an object that is not a document item (an open file), shared by its functions.
+    #[unsafe_ignore_trace]
+    pub extra: Option<Rc<dyn std::any::Any>>,
 }
 
 impl Cap {
     pub fn new(host: &Host, id: Option<u64>) -> Self {
-        Self { host: host.clone(), id: Rc::new(Cell::new(id)), tag: 0 }
+        Self { host: host.clone(), id: Rc::new(Cell::new(id)), tag: 0, extra: None }
     }
 
     pub fn with_tag(&self, tag: u8) -> Self {
-        Self { host: self.host.clone(), id: Rc::clone(&self.id), tag }
+        Self { host: self.host.clone(), id: Rc::clone(&self.id), tag, extra: self.extra.clone() }
+    }
+
+    /// A capture carrying `state` for the object's functions.
+    pub fn with_state(host: &Host, state: Rc<dyn std::any::Any>) -> Self {
+        Self { host: host.clone(), id: Rc::new(Cell::new(None)), tag: 0, extra: Some(state) }
+    }
+
+    pub fn state<T: 'static>(&self) -> JsResult<&T> {
+        self.extra.as_deref().and_then(|e| e.downcast_ref::<T>()).ok_or_else(|| error("not that kind of object"))
     }
 
     pub fn id(&self) -> Option<u64> {
@@ -192,8 +204,9 @@ pub(crate) fn array_of_numbers(values: &[f64], ctx: &mut Context) -> JsValue {
 
 /// Define the globals.
 pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
-    install_dollar(ctx)?;
+    install_dollar(host, ctx)?;
     crate::ui::install(host, ctx)?;
+    crate::fs::install(host, ctx)?;
     let alert = NativeFunction::from_copy_closure_with_captures(
         |_this, args, host: &Host, ctx| {
             let msg = match args.first() {
@@ -330,6 +343,11 @@ fn all_nodes(doc: &Value) -> Vec<&Value> {
 }
 
 /// A collection: an array of objects that also answers `getByName`.
+/// A plain array of script objects.
+pub(crate) fn collection_plain(objects: Vec<JsObject>, ctx: &mut Context) -> JsResult<JsArray> {
+    Ok(JsArray::from_iter(objects.into_iter().map(JsValue::from), ctx))
+}
+
 pub(crate) fn collection(objects: Vec<JsObject>, ctx: &mut Context) -> JsResult<JsObject> {
     let array: JsObject = JsArray::from_iter(objects.into_iter().map(JsValue::from), ctx).into();
     let by_name = NativeFunction::from_fn_ptr(|this, args, ctx| {
@@ -484,7 +502,7 @@ fn set_artboard_rect(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> 
 
 /// `$`, the scripting environment's own object: `writeln` and `write` print to a console that
 /// is not shown, `sleep` waits, the rest describe the host.
-fn install_dollar(ctx: &mut Context) -> JsResult<()> {
+fn install_dollar(host: &Host, ctx: &mut Context) -> JsResult<()> {
     let ignore = |_: &JsValue, _: &[JsValue], _: &mut Context| Ok(JsValue::undefined());
     let sleep = NativeFunction::from_fn_ptr(|_, args, ctx| {
         // Scripts sleep to let the interface catch up, which nothing here needs; cap what a
@@ -500,11 +518,12 @@ fn install_dollar(ctx: &mut Context) -> JsResult<()> {
         .function(NativeFunction::from_fn_ptr(ignore), js_string!("write"), 1)
         .function(NativeFunction::from_fn_ptr(ignore), js_string!("gc"), 0)
         .function(sleep, js_string!("sleep"), 1)
+        .function(NativeFunction::from_fn_ptr(crate::fs::eval_file), js_string!("evalFile"), 1)
         .property(js_string!("os"), JsString::from(std::env::consts::OS), Attribute::all())
         .property(js_string!("version"), js_string!("VectorCraft"), Attribute::all())
         .property(js_string!("locale"), js_string!("pt_BR"), Attribute::all())
         .property(js_string!("level"), 0, Attribute::all())
-        .property(js_string!("fileName"), js_string!(""), Attribute::all())
+        .property(js_string!("fileName"), JsString::from(host.file_name().as_str()), Attribute::all())
         .build();
     ctx.register_global_property(js_string!("$"), dollar, Attribute::all())
 }

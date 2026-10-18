@@ -25,6 +25,8 @@ pub(crate) struct State {
     pub alerts: Vec<String>,
     /// Whoever answers the dialogs the script shows (none: showing one is an error).
     pub presenter: Option<Box<dyn Presenter>>,
+    /// The script file being run, when it came from one.
+    pub file: Option<std::path::PathBuf>,
 }
 
 /// A handle the script's native functions share. The script runs on one thread and every
@@ -37,7 +39,22 @@ pub(crate) struct Host {
 
 impl Host {
     pub fn new(session: Session) -> Self {
-        Self { state: Rc::new(RefCell::new(State { session, backend: None, alerts: vec![], presenter: None })) }
+        Self { state: Rc::new(RefCell::new(State { session, backend: None, alerts: vec![], presenter: None, file: None })) }
+    }
+
+    pub fn set_file(&self, file: Option<std::path::PathBuf>) {
+        if let Ok(mut st) = self.state.try_borrow_mut() {
+            st.file = file;
+        }
+    }
+
+    /// The script file's path as scripts see it (`$.fileName`): empty without one.
+    pub fn file_name(&self) -> String {
+        self.state.try_borrow().ok().and_then(|st| st.file.as_ref().map(|f| f.to_string_lossy().replace('\\', "/"))).unwrap_or_default()
+    }
+
+    pub fn script_dir(&self) -> Option<std::path::PathBuf> {
+        self.state.try_borrow().ok().and_then(|st| st.file.as_ref().and_then(|f| f.parent().map(std::path::Path::to_path_buf)))
     }
 
     pub fn set_presenter(&self, presenter: Option<Box<dyn Presenter>>) {

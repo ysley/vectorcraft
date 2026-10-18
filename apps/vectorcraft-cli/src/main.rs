@@ -421,7 +421,7 @@ fn script(args: &[String]) -> Result<(), String> {
         h.call("engine.execute", json!({"command": "select.all", "params": {}})).map_err(|e| format!("select.all: {e}"))?;
     }
     let presenter = Box::new(DialogLog(vectorcraft_extendscript::driver::Scripted::new(dialog_steps)));
-    let outcome = vectorcraft_extendscript::run_with(&mut h.session, &source, Some(presenter));
+    let outcome = vectorcraft_extendscript::run_file(&mut h.session, &source, Some(std::path::Path::new(&file)), Some(presenter));
     match &outcome {
         Ok(o) => {
             for a in &o.alerts {

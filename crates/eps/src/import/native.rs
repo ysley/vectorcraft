@@ -1053,7 +1053,10 @@ fn unmark(nodes: &mut [Arc<Node>], shown: bool, prints: bool, found: &mut Vec<(N
         let shown = shown && n.visible;
         let prints = prints && !matches!(n.kind, NodeKind::Layer { printable: false, .. });
         if let Some(name) = n.name.as_deref().and_then(|m| m.strip_prefix(MADE)) {
-            if shown && prints {
+            // An empty text object draws nothing on the page, but it is not one the file's page
+            // left out: it is a field to fill, and stays.
+            let empty = matches!(&n.kind, NodeKind::Text(t) if t.plain_text().trim().is_empty());
+            if shown && prints && !empty {
                 found.push((n.id, n.visual_bounds()));
             }
             let name = (!name.is_empty()).then(|| name.to_string());
@@ -1359,3 +1362,4 @@ mod tests {
         assert_eq!(texts, ["Hello", "abcd"]);
     }
 }
+

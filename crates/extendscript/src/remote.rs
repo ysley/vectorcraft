@@ -79,7 +79,7 @@ pub struct Job {
 
 /// Start `source` on a thread of its own. `wake` is called whenever the script needs the owner's
 /// attention (to repaint the interface).
-pub fn spawn(source: String, wake: impl Fn() + Send + Sync + 'static) -> Result<Job, String> {
+pub fn spawn(source: String, file: Option<std::path::PathBuf>, wake: impl Fn() + Send + Sync + 'static) -> Result<Job, String> {
     let (tx, rx) = channel();
     let link = Link { tx, wake: std::sync::Arc::new(wake) };
     let thread_link = link.clone();
@@ -88,7 +88,7 @@ pub fn spawn(source: String, wake: impl Fn() + Send + Sync + 'static) -> Result<
         .name("extendscript".into())
         .stack_size(32 * 1024 * 1024)
         .spawn(move || {
-            let result = crate::run_remote(&source, Box::new(thread_link.clone()), Box::new(thread_link.clone()));
+            let result = crate::run_remote(&source, file, Box::new(thread_link.clone()), Box::new(thread_link.clone()));
             // Whoever stopped listening is gone; the result has nowhere to go.
             let _ = thread_link.send(ToUi::Done(Box::new(result)));
         })
@@ -199,7 +199,7 @@ mod tests {
             alert("fim");
             code + "|" + app.activeDocument.pageItems.length;
         "#;
-        let mut job = spawn(src.into(), || {}).unwrap();
+        let mut job = spawn(src.into(), None, || {}).unwrap();
         let mut clicked = false;
         let out = drive(&mut job, &mut session, |_| {
             if clicked {
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn cancelling_a_dialog_ends_the_script_with_an_error() {
         let mut session = Session::new();
-        let mut job = spawn("new Window('dialog','x').show();".into(), || {}).unwrap();
+        let mut job = spawn("new Window('dialog','x').show();".into(), None, || {}).unwrap();
         for _ in 0..500 {
             job.pump(&mut session, Duration::from_millis(20));
             if job.dialog().is_some() {

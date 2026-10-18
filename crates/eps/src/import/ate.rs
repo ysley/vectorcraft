@@ -631,9 +631,8 @@ impl Story {
         } else {
             self.text.trim_end_matches('\r').chars().map(|c| if matches!(c, '\r' | '\x03') { '\n' } else { c }).collect()
         };
-        if text.trim().is_empty() && !threaded {
-            return None;
-        }
+        // An empty text object is kept: the file has it, and scripts and people fill such fields
+        // (a layout's empty, named quantity boxes), as they do in the app the file came from.
         // The text document measures in the art's units too: the document's scale carries its
         // sizes and spacings onto the page (a Large Canvas copy is written at 1:10; #2031).
         let scale = scale * art_scale(to_doc);

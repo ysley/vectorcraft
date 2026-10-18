@@ -53,7 +53,26 @@ pub struct Widget {
     /// `ok` or `cancel` on a button that closes the dialog by itself.
     pub name: String,
     pub orientation: String,
+    /// The size the script asked for (`preferredSize`, else `size`), in points; zero is not set.
+    pub size: [f64; 2],
+    /// What the widget's `onDraw` painted, in its own coordinates.
+    pub shapes: Vec<Shape>,
     pub children: Vec<Widget>,
+}
+
+/// One painted shape of an `onDraw`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shape {
+    /// `ellipse`, `rect`, `poly` or `text`.
+    pub kind: String,
+    /// `[x, y, width, height]` of an ellipse or rectangle; `[x, y, 0, 0]` where text starts.
+    pub rect: [f64; 4],
+    pub points: Vec<[f64; 2]>,
+    pub text: String,
+    /// Red, green, blue and alpha, each 0 to 1.
+    pub fill: Option<[f32; 4]>,
+    pub stroke: Option<[f32; 4]>,
+    pub width: f64,
 }
 
 /// What the user did. A path is the child indices from the dialog's root.
@@ -142,7 +161,11 @@ fn snapshot_widget(o: &JsObject, depth: usize, ctx: &mut Context) -> JsResult<Wi
             children.push(snapshot_widget(&c, depth + 1, ctx)?);
         }
     }
+    let size = size_of(o, ctx)?;
+    let shapes = draw(o, size, ctx);
     Ok(Widget {
+        size,
+        shapes,
         hidden: !bool_prop(o, js_string!("visible"), true, ctx)?,
         kind,
         text: string_prop(o, js_string!("text"), ctx)?,
@@ -155,6 +178,75 @@ fn snapshot_widget(o: &JsObject, depth: usize, ctx: &mut Context) -> JsResult<Wi
         orientation: string_prop(o, js_string!("orientation"), ctx)?,
         children,
     })
+}
+
+/// `preferredSize`, else `size`, as `[width, height]` (zero where not set).
+fn size_of(o: &JsObject, ctx: &mut Context) -> JsResult<[f64; 2]> {
+    for key in ["preferredSize", "size"] {
+        if let Some(a) = object_prop(o, JsString::from(key), ctx)? {
+            let w = a.get(0, ctx)?;
+            let h = a.get(1, ctx)?;
+            let (w, h) = (if w.is_undefined() { 0.0 } else { w.to_number(ctx)? }, if h.is_undefined() { 0.0 } else { h.to_number(ctx)? });
+            if w.is_finite() && h.is_finite() && (w > 0.0 || h > 0.0) {
+                return Ok([w, h]);
+            }
+        }
+    }
+    Ok([0.0, 0.0])
+}
+
+fn color_of(v: &JsValue, ctx: &mut Context) -> Option<[f32; 4]> {
+    let a = v.as_object()?;
+    let n = |i: u32, ctx: &mut Context, d: f64| -> f64 {
+        a.get(i, ctx).ok().filter(|v| !v.is_undefined()).and_then(|v| v.to_number(ctx).ok()).filter(|v| v.is_finite()).unwrap_or(d)
+    };
+    Some([n(0, ctx, 0.0) as f32, n(1, ctx, 0.0) as f32, n(2, ctx, 0.0) as f32, n(3, ctx, 1.0) as f32])
+}
+
+/// Run the widget's `onDraw` against its recording `graphics` and read what it painted. A script
+/// error in it leaves the widget undrawn, as a failing paint handler would.
+fn draw(o: &JsObject, size: [f64; 2], ctx: &mut Context) -> Vec<Shape> {
+    let Ok(Some(f)) = o.get(js_string!("onDraw"), ctx).map(|v| v.as_callable().cloned()) else { return vec![] };
+    let Ok(Some(g)) = object_prop(o, js_string!("graphics"), ctx) else { return vec![] };
+    let Ok(fresh) = JsArray::new(ctx) else { return vec![] };
+    let _ = g.set(js_string!("__shapes"), fresh, false, ctx);
+    // A widget the script gave no size to is drawn at the size it asked to be.
+    if let Some(sz) = object_prop(o, js_string!("size"), ctx).ok().flatten()
+        && size[0] > 0.0
+    {
+        let _ = sz.set(0, size[0], false, ctx);
+        let _ = sz.set(1, size[1], false, ctx);
+    }
+    if f.call(&JsValue::from(o.clone()), &[], ctx).is_err() {
+        return vec![];
+    }
+    let Ok(list) = elements(&g, js_string!("__shapes"), ctx) else { return vec![] };
+    let mut out = vec![];
+    for item in list.into_iter().filter_map(|v| v.as_object()).take(2000) {
+        let num = |k: &str, ctx: &mut Context| number_prop(&item, JsString::from(k), ctx).unwrap_or(0.0);
+        let mut shape = Shape {
+            kind: string_prop(&item, js_string!("kind"), ctx).unwrap_or_default(),
+            rect: [num("x", ctx), num("y", ctx), num("w", ctx), num("h", ctx)],
+            text: string_prop(&item, js_string!("text"), ctx).unwrap_or_default(),
+            width: num("width", ctx),
+            ..Shape::default()
+        };
+        if let Ok(v) = item.get(js_string!("fill"), ctx) {
+            shape.fill = color_of(&v, ctx);
+        }
+        if let Ok(v) = item.get(js_string!("stroke"), ctx) {
+            shape.stroke = color_of(&v, ctx);
+        }
+        if let Ok(pts) = elements(&item, js_string!("points"), ctx) {
+            for p in pts.chunks(2).take(2000) {
+                if let [x, y] = p {
+                    shape.points.push([x.to_number(ctx).unwrap_or(0.0), y.to_number(ctx).unwrap_or(0.0)]);
+                }
+            }
+        }
+        out.push(shape);
+    }
+    out
 }
 
 fn widget_at(root: &JsObject, path: &[usize], ctx: &mut Context) -> JsResult<JsObject> {
@@ -188,6 +280,140 @@ fn dimension(ctx: &mut Context) -> JsResult<JsObject> {
     Ok(o)
 }
 
+fn font(name: &str, style: &str, size: f64, ctx: &mut Context) -> JsObject {
+    ObjectInitializer::new(ctx)
+        .property(js_string!("name"), JsString::from(name), Attribute::all())
+        .property(js_string!("family"), JsString::from(name), Attribute::all())
+        .property(js_string!("style"), JsString::from(style), Attribute::all())
+        .property(js_string!("size"), size, Attribute::all())
+        .build()
+}
+
+fn pair_of_consts(ctx: &mut Context, a: &str, b: &str) -> JsObject {
+    ObjectInitializer::new(ctx)
+        .property(JsString::from(a), 0, Attribute::all())
+        .property(JsString::from(b), 1, Attribute::all())
+        .build()
+}
+
+fn num_arg(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<f64> {
+    let v = args.get(i).cloned().unwrap_or_default();
+    let n = if v.is_undefined() { 0.0 } else { v.to_number(ctx)? };
+    Ok(if n.is_finite() { n } else { 0.0 })
+}
+
+fn set_path(g: &JsValue, kind: &str, vals: [f64; 4], ctx: &mut Context) -> JsResult<JsValue> {
+    let g = this_object(g)?;
+    let path = ObjectInitializer::new(ctx)
+        .property(js_string!("kind"), JsString::from(kind), Attribute::all())
+        .property(js_string!("x"), vals[0], Attribute::all())
+        .property(js_string!("y"), vals[1], Attribute::all())
+        .property(js_string!("w"), vals[2], Attribute::all())
+        .property(js_string!("h"), vals[3], Attribute::all())
+        .property(js_string!("points"), JsArray::new(ctx)?, Attribute::all())
+        .build();
+    g.set(js_string!("__path"), path, false, ctx)?;
+    Ok(JsValue::undefined())
+}
+
+/// `fillPath(brush)` and `strokePath(pen)`: record the current path as painted.
+fn paint_path(this: &JsValue, args: &[JsValue], stroke: bool, ctx: &mut Context) -> JsResult<JsValue> {
+    let g = this_object(this)?;
+    let Some(path) = object_prop(&g, js_string!("__path"), ctx)? else { return Ok(JsValue::undefined()) };
+    let Some(tool) = args.first().and_then(JsValue::as_object) else { return Ok(JsValue::undefined()) };
+    let shape = ObjectInitializer::new(ctx).build();
+    for k in ["kind", "x", "y", "w", "h", "points"] {
+        let v = path.get(JsString::from(k), ctx)?;
+        shape.set(JsString::from(k), v, false, ctx)?;
+    }
+    let color = tool.get(js_string!("color"), ctx)?;
+    shape.set(if stroke { js_string!("stroke") } else { js_string!("fill") }, color, false, ctx)?;
+    if stroke {
+        let w = tool.get(js_string!("lineWidth"), ctx)?;
+        shape.set(js_string!("width"), w, false, ctx)?;
+    }
+    let list = object_prop(&g, js_string!("__shapes"), ctx)?;
+    if let Some(list) = list {
+        push(&list, shape.into(), ctx)?;
+    }
+    Ok(JsValue::undefined())
+}
+
+/// What a widget's `graphics` is while its `onDraw` runs: it records what is painted, for the
+/// presenter to paint, and holds the widget's `font`.
+fn make_graphics(ctx: &mut Context) -> JsResult<JsObject> {
+    let brush_types = pair_of_consts(ctx, "SOLID_COLOR", "THEME_COLOR");
+    let pen_types = pair_of_consts(ctx, "SOLID_COLOR", "THEME_COLOR");
+    let default_font = font("dialog", "REGULAR", 12.0, ctx);
+    let shapes = JsArray::new(ctx)?;
+    let mut init = ObjectInitializer::new(ctx);
+    init.property(js_string!("BrushType"), brush_types, Attribute::all());
+    init.property(js_string!("PenType"), pen_types, Attribute::all());
+    init.property(js_string!("font"), default_font, Attribute::all());
+    init.property(js_string!("__shapes"), shapes, Attribute::all());
+    let g = init.build();
+    let methods: [(&str, usize, Native); 11] = [
+        ("newBrush", 2, |_, a, ctx| {
+            let color = a.get(1).cloned().unwrap_or_default();
+            Ok(ObjectInitializer::new(ctx).property(js_string!("color"), color, Attribute::all()).build().into())
+        }),
+        ("newPen", 3, |_, a, ctx| {
+            let color = a.get(1).cloned().unwrap_or_default();
+            let width = num_arg(a, 2, ctx)?;
+            Ok(ObjectInitializer::new(ctx)
+                .property(js_string!("color"), color, Attribute::all())
+                .property(js_string!("lineWidth"), width, Attribute::all())
+                .build()
+                .into())
+        }),
+        ("ellipsePath", 4, |t, a, ctx| {
+            let v = [num_arg(a, 0, ctx)?, num_arg(a, 1, ctx)?, num_arg(a, 2, ctx)?, num_arg(a, 3, ctx)?];
+            set_path(t, "ellipse", v, ctx)
+        }),
+        ("rectPath", 4, |t, a, ctx| {
+            let v = [num_arg(a, 0, ctx)?, num_arg(a, 1, ctx)?, num_arg(a, 2, ctx)?, num_arg(a, 3, ctx)?];
+            set_path(t, "rect", v, ctx)
+        }),
+        ("newPath", 0, |t, _, ctx| set_path(t, "poly", [0.0; 4], ctx)),
+        ("moveTo", 2, |t, a, ctx| {
+            let (x, y) = (num_arg(a, 0, ctx)?, num_arg(a, 1, ctx)?);
+            point(t, x, y, ctx)
+        }),
+        ("lineTo", 2, |t, a, ctx| {
+            let (x, y) = (num_arg(a, 0, ctx)?, num_arg(a, 1, ctx)?);
+            point(t, x, y, ctx)
+        }),
+        ("closePath", 0, |_, _, _| Ok(JsValue::undefined())),
+        ("fillPath", 1, |t, a, ctx| paint_path(t, a, false, ctx)),
+        ("strokePath", 1, |t, a, ctx| paint_path(t, a, true, ctx)),
+        ("measureString", 1, |_, a, ctx| {
+            let n = a.first().cloned().unwrap_or_default().to_string(ctx)?.to_std_string_escaped().chars().count() as f64;
+            Ok(ObjectInitializer::new(ctx).property(js_string!("width"), n * 7.0, Attribute::all()).property(js_string!("height"), 14.0, Attribute::all()).build().into())
+        }),
+    ];
+    for (name, len, f) in methods {
+        let func = NativeFunction::from_fn_ptr(f).to_js_function(ctx.realm());
+        let _ = len;
+        g.set(JsString::from(name), func, false, ctx)?;
+    }
+    for name in ["drawString", "drawOSControl", "drawImage"] {
+        let nop = function(ctx, |_, _, _| Ok(JsValue::undefined()));
+        g.set(JsString::from(name), nop, false, ctx)?;
+    }
+    Ok(g)
+}
+
+fn point(t: &JsValue, x: f64, y: f64, ctx: &mut Context) -> JsResult<JsValue> {
+    let g = this_object(t)?;
+    if let Some(path) = object_prop(&g, js_string!("__path"), ctx)?
+        && let Some(points) = object_prop(&path, js_string!("points"), ctx)?
+    {
+        push(&points, x.into(), ctx)?;
+        push(&points, y.into(), ctx)?;
+    }
+    Ok(JsValue::undefined())
+}
+
 type Native = fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>;
 
 fn function(ctx: &Context, f: Native) -> JsFunction {
@@ -214,7 +440,9 @@ fn make_widget(kind: &str, text: Option<String>, ctx: &mut Context) -> JsResult<
     let children = JsArray::new(ctx)?;
     let items = JsArray::new(ctx)?;
     let (preferred, size) = (dimension(ctx)?, dimension(ctx)?);
+    let graphics = make_graphics(ctx)?;
     let mut init = ObjectInitializer::new(ctx);
+    init.property(js_string!("graphics"), graphics, Attribute::all());
     init.property(js_string!("preferredSize"), preferred, Attribute::all());
     init.property(js_string!("size"), size, Attribute::all());
     init.property(js_string!("type"), JsString::from(kind), Attribute::all());
@@ -418,6 +646,32 @@ pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
         },
         host.clone(),
     );
+    let new_font = NativeFunction::from_fn_ptr(|_, a, ctx| {
+        let name = a.first().cloned().unwrap_or_default().to_string(ctx)?.to_std_string_escaped();
+        let style = a.get(1).filter(|v| !v.is_undefined() && !v.is_null()).cloned().unwrap_or_default().to_string(ctx)?.to_std_string_escaped();
+        let size = num_arg(a, 2, ctx)?;
+        Ok(font(&name, &style, size, ctx).into())
+    })
+    .to_js_function(ctx.realm());
+    let styles = ObjectInitializer::new(ctx)
+        .property(js_string!("REGULAR"), js_string!("REGULAR"), Attribute::all())
+        .property(js_string!("BOLD"), js_string!("BOLD"), Attribute::all())
+        .property(js_string!("ITALIC"), js_string!("ITALIC"), Attribute::all())
+        .property(js_string!("BOLDITALIC"), js_string!("BOLDITALIC"), Attribute::all())
+        .build();
+    let keyboard = ObjectInitializer::new(ctx)
+        .property(js_string!("ctrlKey"), false, Attribute::all())
+        .property(js_string!("shiftKey"), false, Attribute::all())
+        .property(js_string!("altKey"), false, Attribute::all())
+        .property(js_string!("metaKey"), false, Attribute::all())
+        .build();
+    let environment = ObjectInitializer::new(ctx).property(js_string!("keyboardState"), keyboard, Attribute::all()).build();
+    let script_ui = ObjectInitializer::new(ctx)
+        .property(js_string!("newFont"), new_font, Attribute::all())
+        .property(js_string!("FontStyle"), styles, Attribute::all())
+        .property(js_string!("environment"), environment, Attribute::all())
+        .build();
+    ctx.register_global_property(js_string!("ScriptUI"), script_ui, Attribute::all())?;
     let window = FunctionObjectBuilder::new(ctx.realm(), make).name(js_string!("Window")).length(2).constructor(true).build();
     ctx.register_global_property(js_string!("Window"), window, Attribute::all())
 }
