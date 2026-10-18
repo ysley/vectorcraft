@@ -192,6 +192,7 @@ pub(crate) fn array_of_numbers(values: &[f64], ctx: &mut Context) -> JsValue {
 
 /// Define the globals.
 pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
+    crate::ui::install(host, ctx)?;
     let alert = NativeFunction::from_copy_closure_with_captures(
         |_this, args, host: &Host, ctx| {
             let msg = match args.first() {

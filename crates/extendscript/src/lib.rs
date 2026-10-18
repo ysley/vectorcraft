@@ -8,15 +8,19 @@
 //! from its public scripting reference, and what a script sees beyond them is what VectorCraft
 //! does. `vectorcraft-scriptcheck` reports, before a run, what a script uses.
 //!
-//! Not supported yet: dialogs (`Window`), `File` and `Folder`, `$.evalFile`, text, artboards,
+//! Not supported yet: `File` and `Folder`, `$.evalFile`, text, artboards,
 //! geometry and the E4X XML literals; a script that uses them fails with the engine's error
 //! naming the missing object.
 #![forbid(unsafe_code)]
 
 mod dom;
+pub mod driver;
 mod geom;
 mod host;
 mod node;
+pub mod ui;
+
+pub use ui::{Dialog, Event, Presenter, Widget};
 
 use boa_engine::{Context, Source};
 use vectorcraft_engine::Session;
@@ -46,7 +50,13 @@ pub enum ScriptError {
 
 /// Run `source` against `session`: its changes land in the session's active document.
 pub fn run(session: &mut Session, source: &str) -> Result<Outcome, ScriptError> {
+    run_with(session, source, None)
+}
+
+/// Like [`run`], with someone to answer the dialogs the script shows.
+pub fn run_with(session: &mut Session, source: &str, presenter: Option<Box<dyn Presenter>>) -> Result<Outcome, ScriptError> {
     let host = Host::new(std::mem::replace(session, Session::new()));
+    host.set_presenter(presenter);
     let result = evaluate(&host, source);
     // The script is over: take the session back whatever happened.
     let (back, alerts) = host.take().map_err(ScriptError::Internal)?;

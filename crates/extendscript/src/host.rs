@@ -6,11 +6,15 @@ use boa_gc::{Finalize, Trace};
 use serde_json::Value;
 use vectorcraft_engine::{Session, inspect};
 
+use crate::ui::{Dialog, Event, Presenter};
+
 /// What the script and its host exchange while it runs.
 pub(crate) struct State {
     pub session: Session,
     /// The text of every `alert()` the script made, in order.
     pub alerts: Vec<String>,
+    /// Whoever answers the dialogs the script shows (none: showing one is an error).
+    pub presenter: Option<Box<dyn Presenter>>,
 }
 
 /// A handle the script's native functions share. The script runs on one thread and every
@@ -23,7 +27,34 @@ pub(crate) struct Host {
 
 impl Host {
     pub fn new(session: Session) -> Self {
-        Self { state: Rc::new(RefCell::new(State { session, alerts: vec![] })) }
+        Self { state: Rc::new(RefCell::new(State { session, alerts: vec![], presenter: None })) }
+    }
+
+    pub fn set_presenter(&self, presenter: Option<Box<dyn Presenter>>) {
+        if let Ok(mut st) = self.state.try_borrow_mut() {
+            st.presenter = presenter;
+        }
+    }
+
+    pub fn open_dialog(&self, dialog: &Dialog) {
+        let taken = self.state.try_borrow_mut().ok().and_then(|mut st| st.presenter.take());
+        if let Some(mut p) = taken {
+            p.open(dialog);
+            if let Ok(mut st) = self.state.try_borrow_mut() {
+                st.presenter = Some(p);
+            }
+        }
+    }
+
+    /// The user's next action on `dialog`; the presenter is not borrowed while it waits.
+    pub fn next_dialog_event(&self, dialog: &Dialog) -> Result<Event, String> {
+        let taken = self.state.try_borrow_mut().map_err(|_| "the document is busy".to_string())?.presenter.take();
+        let mut p = taken.ok_or_else(|| "this run cannot show dialogs".to_string())?;
+        let event = p.next_event(dialog);
+        if let Ok(mut st) = self.state.try_borrow_mut() {
+            st.presenter = Some(p);
+        }
+        event
     }
 
     pub fn alert(&self, text: String) {
