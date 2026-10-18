@@ -137,7 +137,7 @@ mod tests_saveext;
 mod tests_screenmode;
 #[cfg(test)]
 mod tests_script_check;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
 mod tests_script_run;
 #[cfg(test)]
 mod tests_scrub;

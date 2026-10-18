@@ -1,6 +1,8 @@
 //! File › Scripts › Run Script… (`ui.runScript`): a script runs beside the open document, its
 //! commands change the artwork frame by frame, and the dialog it shows is drawn and answered here.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::time::{Duration, Instant};
 
 use serde_json::json;
