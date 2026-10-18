@@ -10,9 +10,7 @@ use std::{
 };
 
 use boa_engine::{
-    Context, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string,
-    object::FunctionObjectBuilder,
-    property::Attribute,
+    Context, JsObject, JsResult, JsString, JsValue, NativeFunction, Source, js_string, object::FunctionObjectBuilder, property::Attribute,
 };
 
 use crate::{
@@ -180,7 +178,11 @@ fn open(c: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
         }
         'w' | 'a' => {
             // Making the file now tells the script at once when it cannot be written.
-            let made = if mode == 'w' { std::fs::write(&e.path, b"") } else { std::fs::OpenOptions::new().create(true).append(true).open(&e.path).map(|_| ()) };
+            let made = if mode == 'w' {
+                std::fs::write(&e.path, b"")
+            } else {
+                std::fs::OpenOptions::new().create(true).append(true).open(&e.path).map(|_| ())
+            };
             if let Err(err) = made {
                 io.error = err.to_string();
                 return Ok(false.into());
@@ -321,7 +323,18 @@ pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
                 let o = make(host, p, true, ctx);
                 ctor.set(JsString::from(k), o, false, ctx)?;
             }
-            ctor.set(js_string!("fs"), JsString::from(if cfg!(windows) { "Windows" } else if cfg!(target_os = "macos") { "Macintosh" } else { "Unix" }), false, ctx)?;
+            ctor.set(
+                js_string!("fs"),
+                JsString::from(if cfg!(windows) {
+                    "Windows"
+                } else if cfg!(target_os = "macos") {
+                    "Macintosh"
+                } else {
+                    "Unix"
+                }),
+                false,
+                ctx,
+            )?;
         } else {
             for k in ["openDialog", "saveDialog"] {
                 let nothing = NativeFunction::from_fn_ptr(|_, _, _| Ok(JsValue::null())).to_js_function(ctx.realm());

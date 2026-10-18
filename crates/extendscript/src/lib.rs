@@ -15,8 +15,8 @@
 
 mod dom;
 pub mod driver;
-mod geom;
 mod fs;
+mod geom;
 mod host;
 mod node;
 mod preprocess;
@@ -64,7 +64,12 @@ pub fn run_with(session: &mut Session, source: &str, presenter: Option<Box<dyn P
 
 /// Like [`run_with`] for a script that came from `file`: `$.fileName` names it and its `#include`
 /// lines are found next to it.
-pub fn run_file(session: &mut Session, source: &str, file: Option<&std::path::Path>, presenter: Option<Box<dyn Presenter>>) -> Result<Outcome, ScriptError> {
+pub fn run_file(
+    session: &mut Session,
+    source: &str,
+    file: Option<&std::path::Path>,
+    presenter: Option<Box<dyn Presenter>>,
+) -> Result<Outcome, ScriptError> {
     let host = Host::new(std::mem::replace(session, Session::new()));
     host.set_presenter(presenter);
     host.set_file(file.map(std::path::Path::to_path_buf));
@@ -80,7 +85,12 @@ pub fn run_file(session: &mut Session, source: &str, file: Option<&std::path::Pa
 
 /// Run `source` against a document that lives elsewhere ([`remote`]); the script's alerts go to
 /// the backend as they happen.
-pub(crate) fn run_remote(source: &str, file: Option<std::path::PathBuf>, backend: Box<dyn host::Backend>, presenter: Box<dyn Presenter>) -> Result<Outcome, ScriptError> {
+pub(crate) fn run_remote(
+    source: &str,
+    file: Option<std::path::PathBuf>,
+    backend: Box<dyn host::Backend>,
+    presenter: Box<dyn Presenter>,
+) -> Result<Outcome, ScriptError> {
     let host = Host::remote(backend);
     host.set_file(file);
     host.set_presenter(Some(presenter));

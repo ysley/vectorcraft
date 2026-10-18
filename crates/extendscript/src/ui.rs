@@ -206,7 +206,8 @@ fn color_of(v: &JsValue, ctx: &mut Context) -> Option<[f32; 4]> {
 /// Run the widget's `onDraw` against its recording `graphics` and read what it painted. A script
 /// error in it leaves the widget undrawn, as a failing paint handler would.
 fn draw(o: &JsObject, size: [f64; 2], ctx: &mut Context) -> Vec<Shape> {
-    let Ok(Some(f)) = o.get(js_string!("onDraw"), ctx).map(|v| v.as_callable().cloned()) else { return vec![] };
+    let Ok(v) = o.get(js_string!("onDraw"), ctx) else { return vec![] };
+    let Some(f) = v.as_callable() else { return vec![] };
     let Ok(Some(g)) = object_prop(o, js_string!("graphics"), ctx) else { return vec![] };
     let Ok(fresh) = JsArray::new(ctx) else { return vec![] };
     let _ = g.set(js_string!("__shapes"), fresh, false, ctx);
@@ -290,10 +291,7 @@ fn font(name: &str, style: &str, size: f64, ctx: &mut Context) -> JsObject {
 }
 
 fn pair_of_consts(ctx: &mut Context, a: &str, b: &str) -> JsObject {
-    ObjectInitializer::new(ctx)
-        .property(JsString::from(a), 0, Attribute::all())
-        .property(JsString::from(b), 1, Attribute::all())
-        .build()
+    ObjectInitializer::new(ctx).property(JsString::from(a), 0, Attribute::all()).property(JsString::from(b), 1, Attribute::all()).build()
 }
 
 fn num_arg(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<f64> {
@@ -304,13 +302,14 @@ fn num_arg(args: &[JsValue], i: usize, ctx: &mut Context) -> JsResult<f64> {
 
 fn set_path(g: &JsValue, kind: &str, vals: [f64; 4], ctx: &mut Context) -> JsResult<JsValue> {
     let g = this_object(g)?;
+    let points = JsArray::new(ctx)?;
     let path = ObjectInitializer::new(ctx)
         .property(js_string!("kind"), JsString::from(kind), Attribute::all())
         .property(js_string!("x"), vals[0], Attribute::all())
         .property(js_string!("y"), vals[1], Attribute::all())
         .property(js_string!("w"), vals[2], Attribute::all())
         .property(js_string!("h"), vals[3], Attribute::all())
-        .property(js_string!("points"), JsArray::new(ctx)?, Attribute::all())
+        .property(js_string!("points"), points, Attribute::all())
         .build();
     g.set(js_string!("__path"), path, false, ctx)?;
     Ok(JsValue::undefined())
@@ -388,7 +387,11 @@ fn make_graphics(ctx: &mut Context) -> JsResult<JsObject> {
         ("strokePath", 1, |t, a, ctx| paint_path(t, a, true, ctx)),
         ("measureString", 1, |_, a, ctx| {
             let n = a.first().cloned().unwrap_or_default().to_string(ctx)?.to_std_string_escaped().chars().count() as f64;
-            Ok(ObjectInitializer::new(ctx).property(js_string!("width"), n * 7.0, Attribute::all()).property(js_string!("height"), 14.0, Attribute::all()).build().into())
+            Ok(ObjectInitializer::new(ctx)
+                .property(js_string!("width"), n * 7.0, Attribute::all())
+                .property(js_string!("height"), 14.0, Attribute::all())
+                .build()
+                .into())
         }),
     ];
     for (name, len, f) in methods {
@@ -869,5 +872,37 @@ mod tests {
         let mut s = Session::new();
         let err = crate::run(&mut s, "new Window('dialog','x').show();").unwrap_err().to_string();
         assert!(err.contains("cannot show dialogs"), "{err}");
+    }
+
+    #[test]
+    fn on_draw_swatches_are_recorded_for_the_presenter() {
+        struct Spy(std::rc::Rc<std::cell::RefCell<Vec<crate::Widget>>>);
+        impl crate::Presenter for Spy {
+            fn next_event(&mut self, d: &crate::Dialog) -> Result<crate::Event, String> {
+                self.0.borrow_mut().extend(d.root.children.clone());
+                Ok(crate::Event::Close(1))
+            }
+        }
+        let src = r#"var w = new Window("dialog", "x");
+            ScriptUI.newFont("dialog", "BOLD", 14);
+            var sw = w.add("statictext", undefined, ""); sw.preferredSize = [22, 22];
+            sw.graphics.font = ScriptUI.newFont(sw.graphics.font.name, "BOLD", 16);
+            sw.onDraw = function () {
+                var g = this.graphics; var W = this.size[0], r = W / 2 - 1;
+                g.ellipsePath(W / 2 - r, W / 2 - r, r * 2, r * 2);
+                g.fillPath(g.newBrush(g.BrushType.SOLID_COLOR, [1, 0.5, 0, 1]));
+                g.strokePath(g.newPen(g.PenType.SOLID_COLOR, [0, 0, 0, 1], 2));
+            };
+            w.show();"#;
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+        let mut s = Session::new();
+        run_with(&mut s, src, Some(Box::new(Spy(seen.clone())))).unwrap();
+        let widgets = seen.borrow();
+        let shapes = &widgets[0].shapes;
+        assert_eq!(shapes.len(), 2, "{shapes:?}");
+        assert_eq!(shapes[0].kind, "ellipse");
+        assert_eq!(shapes[0].fill, Some([1.0, 0.5, 0.0, 1.0]));
+        assert_eq!(shapes[1].stroke, Some([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(widgets[0].size, [22.0, 22.0]);
     }
 }
