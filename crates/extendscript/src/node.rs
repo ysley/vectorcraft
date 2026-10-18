@@ -5,7 +5,7 @@ use boa_engine::{Context, JsObject, JsResult, JsValue, js_string};
 use serde_json::{Value, json};
 
 use crate::{
-    dom::{Cap, Obj, array_of_numbers, children, collection, error, exec, find_node, is_layer, number, number_at, text},
+    dom::{Cap, Obj, array_of_numbers, children, collection, error, exec, find_node, find_parent, is_layer, number, number_at, text},
     geom::Origin,
     host::Host,
 };
@@ -76,6 +76,7 @@ fn build(cap: Cap, typename: &'static str, ctx: &mut Context) -> JsObject {
         .get_set("locked", |cap, _| Ok(flag(cap, "locked")?.into()), |cap, v, _| set_flag(cap, "locked", v.to_boolean()))
         .get("layers", node_layers)
         .get("pageItems", node_page_items)
+        .get("parent", node_parent)
         .get("geometricBounds", node_bounds)
         .get("visibleBounds", node_bounds)
         .get("width", |cap, _| {
@@ -139,6 +140,17 @@ fn flag(cap: &Cap, key: &str) -> JsResult<bool> {
 
 fn set_flag(cap: &Cap, key: &str, on: bool) -> JsResult<()> {
     exec(cap, "object.setProps", json!({"id": cap.need()?, key: on})).map(|_| ())
+}
+
+/// The group or layer an item sits in; the document for a top-level layer.
+fn node_parent(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let id = cap.need()?;
+    let doc = cap.host.document();
+    match find_parent(&doc, id) {
+        Some(Some(parent)) => Ok(node_object(&cap.host, parent, ctx).into()),
+        Some(None) => Ok(crate::dom::document_object(&cap.host, ctx).into()),
+        None => Err(error("the object no longer exists")),
+    }
 }
 
 /// The sublayers of a layer.

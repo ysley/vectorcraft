@@ -179,6 +179,15 @@ fn fire(widget: &JsObject, key: JsString, ctx: &mut Context) -> JsResult<()> {
 // Making widgets
 // ----------------------------------------------------------------------------------------------
 
+/// A `[width, height]` that also answers to `.width` and `.height`, as sizes do in scripts.
+fn dimension(ctx: &mut Context) -> JsResult<JsObject> {
+    let a = JsArray::from_iter([JsValue::from(0), JsValue::from(0)], ctx);
+    let o: JsObject = a.into();
+    o.set(js_string!("width"), 0, false, ctx)?;
+    o.set(js_string!("height"), 0, false, ctx)?;
+    Ok(o)
+}
+
 type Native = fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>;
 
 fn function(ctx: &Context, f: Native) -> JsFunction {
@@ -204,7 +213,10 @@ fn make_widget(kind: &str, text: Option<String>, ctx: &mut Context) -> JsResult<
     let selection_set = function(ctx, selection_set);
     let children = JsArray::new(ctx)?;
     let items = JsArray::new(ctx)?;
+    let (preferred, size) = (dimension(ctx)?, dimension(ctx)?);
     let mut init = ObjectInitializer::new(ctx);
+    init.property(js_string!("preferredSize"), preferred, Attribute::all());
+    init.property(js_string!("size"), size, Attribute::all());
     init.property(js_string!("type"), JsString::from(kind), Attribute::all());
     init.property(js_string!("text"), JsString::from(text.unwrap_or_default().as_str()), Attribute::all());
     init.property(js_string!("enabled"), true, Attribute::all());

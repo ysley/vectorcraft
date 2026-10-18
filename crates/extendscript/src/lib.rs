@@ -372,4 +372,13 @@ mod tests {
         let made = doc["layers"][0]["children"].as_array().unwrap().iter().find(|n| n["fill"] == "#000000" && n["id"] != before).unwrap();
         assert_eq!((&made["stroke"], &made["strokeWidth"]), (&b["stroke"], &b["strokeWidth"]), "{made} {b}");
     }
+
+    #[test]
+    fn the_dollar_object_exists_and_parent_climbs_to_the_layer_and_document() {
+        let mut s = session_with_document();
+        rect(&mut s, 0.0, 0.0, 10.0, 10.0);
+        let src = "$.writeln('oi'); $.sleep(1); var it = app.activeDocument.pageItems[0]; \
+                   it.parent.typename + '|' + it.parent.parent.typename + '|' + typeof $.os";
+        assert_eq!(run(&mut s, src).unwrap().value, "Layer|Document|string");
+    }
 }

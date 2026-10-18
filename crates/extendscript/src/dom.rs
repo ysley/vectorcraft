@@ -192,6 +192,7 @@ pub(crate) fn array_of_numbers(values: &[f64], ctx: &mut Context) -> JsValue {
 
 /// Define the globals.
 pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
+    install_dollar(ctx)?;
     crate::ui::install(host, ctx)?;
     let alert = NativeFunction::from_copy_closure_with_captures(
         |_this, args, host: &Host, ctx| {
@@ -257,7 +258,7 @@ fn app_active_document(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
 // The document
 // ----------------------------------------------------------------------------------------------
 
-fn document_object(host: &Host, ctx: &mut Context) -> JsObject {
+pub(crate) fn document_object(host: &Host, ctx: &mut Context) -> JsObject {
     let cap = Cap::new(host, None);
     Obj::new(ctx, &cap)
         .value("typename", js_string!("Document"))
@@ -294,6 +295,23 @@ pub(crate) fn find_node(doc: &Value, id: u64) -> Option<&Value> {
         })
     }
     walk(layer_list(doc), id)
+}
+
+/// Where the node with this id sits: `Some(None)` for a top-level layer (its parent is the
+/// document), `Some(Some(parent))` for anything else, `None` when there is no such node.
+pub(crate) fn find_parent(doc: &Value, id: u64) -> Option<Option<&Value>> {
+    fn walk<'a>(list: &'a [Value], parent: Option<&'a Value>, id: u64) -> Option<Option<&'a Value>> {
+        for n in list {
+            if n.get("id").and_then(Value::as_u64) == Some(id) {
+                return Some(parent);
+            }
+            if let Some(found) = n.get("children").and_then(Value::as_array).and_then(|c| walk(c, Some(n), id)) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    walk(layer_list(doc), None, id)
 }
 
 /// Every node below the layers, in document order.
@@ -462,4 +480,31 @@ fn set_artboard_rect(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> 
     let origin = Origin::of(&cap.host.document());
     let (x, y) = origin.to_engine(left, top);
     exec(cap, "artboard.setProps", json!({"index": cap.need()?, "x": x, "y": y, "width": right - left, "height": top - bottom})).map(|_| ())
+}
+
+/// `$`, the scripting environment's own object: `writeln` and `write` print to a console that
+/// is not shown, `sleep` waits, the rest describe the host.
+fn install_dollar(ctx: &mut Context) -> JsResult<()> {
+    let ignore = |_: &JsValue, _: &[JsValue], _: &mut Context| Ok(JsValue::undefined());
+    let sleep = NativeFunction::from_fn_ptr(|_, args, ctx| {
+        // Scripts sleep to let the interface catch up, which nothing here needs; cap what a
+        // runaway value could do.
+        let ms = args.first().map(|v| v.to_number(ctx)).transpose()?.unwrap_or(0.0);
+        if ms.is_finite() && ms > 0.0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms.min(50.0) as u64));
+        }
+        Ok(JsValue::undefined())
+    });
+    let dollar = ObjectInitializer::new(ctx)
+        .function(NativeFunction::from_fn_ptr(ignore), js_string!("writeln"), 1)
+        .function(NativeFunction::from_fn_ptr(ignore), js_string!("write"), 1)
+        .function(NativeFunction::from_fn_ptr(ignore), js_string!("gc"), 0)
+        .function(sleep, js_string!("sleep"), 1)
+        .property(js_string!("os"), JsString::from(std::env::consts::OS), Attribute::all())
+        .property(js_string!("version"), js_string!("VectorCraft"), Attribute::all())
+        .property(js_string!("locale"), js_string!("pt_BR"), Attribute::all())
+        .property(js_string!("level"), 0, Attribute::all())
+        .property(js_string!("fileName"), js_string!(""), Attribute::all())
+        .build();
+    ctx.register_global_property(js_string!("$"), dollar, Attribute::all())
 }

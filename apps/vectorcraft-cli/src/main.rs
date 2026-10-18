@@ -82,11 +82,11 @@ USAGE:
       order, export each FILE in the format its extension picks (see Writable formats). Prints one
       JSON result per step.
 
-  vectorcraft-cli script FILE.jsx [--in FILE] [--select-all] [--export FILE]... [--save FILE] [--scale N]
+  vectorcraft-cli script FILE.jsx [--in FILE] [--select-all] [--step S]... [--export FILE]... [--save FILE] [--scale N]
       Run a script written for the reference app's scripting (.jsx) headless: open FILE or start a
       new document, run the script against it, then export and save as asked. Prints the script's
       alert() texts and its last value as JSON lines. --select-all selects everything first, for
-      scripts that work on the selection. Not supported yet: Window dialogs, File and Folder,
+      scripts that work on the selection. A script's dialogs are answered by --step (click:LABEL, type:LABEL=TEXT, choose:ITEM, ok, cancel); each dialog shown is printed. Not supported yet: File and Folder,
       $.evalFile, E4X; the error names what is missing. See vectorcraft-scriptcheck for what a
       script needs before you run it.
 
@@ -388,10 +388,12 @@ fn script(args: &[String]) -> Result<(), String> {
     let mut exports: Vec<String> = vec![];
     let mut save: Option<String> = None;
     let mut scale = 1.0;
+    let mut dialog_steps: Vec<vectorcraft_extendscript::driver::Step> = vec![];
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |what: &str| it.next().cloned().ok_or_else(|| format!("{a} needs {what}"));
         match a.as_str() {
+            "--step" => dialog_steps.push(parse_step(&val("a step")?)?),
             "--in" | "-i" => input = Some(val("a file")?),
             "--select-all" => select_all = true,
             "--export" | "-o" => exports.push(val("a file")?),
@@ -418,7 +420,8 @@ fn script(args: &[String]) -> Result<(), String> {
     if select_all {
         h.call("engine.execute", json!({"command": "select.all", "params": {}})).map_err(|e| format!("select.all: {e}"))?;
     }
-    let outcome = vectorcraft_extendscript::run(&mut h.session, &source);
+    let presenter = Box::new(DialogLog(vectorcraft_extendscript::driver::Scripted::new(dialog_steps)));
+    let outcome = vectorcraft_extendscript::run_with(&mut h.session, &source, Some(presenter));
     match &outcome {
         Ok(o) => {
             for a in &o.alerts {
@@ -443,6 +446,44 @@ fn script(args: &[String]) -> Result<(), String> {
         outln!("{}", json!({"save": r}));
     }
     outcome.map(|_| ()).map_err(|e| format!("{file}: {e}"))
+}
+
+/// `click:LABEL`, `type:LABEL=TEXT`, `choose:ITEM`, `ok` or `cancel`: one thing the user does in a
+/// dialog the script shows.
+fn parse_step(text: &str) -> Result<vectorcraft_extendscript::driver::Step, String> {
+    use vectorcraft_extendscript::driver::Step;
+    let (kind, rest) = text.split_once(':').unwrap_or((text, ""));
+    match kind {
+        "click" => Ok(Step::Click(rest.to_string())),
+        "choose" => Ok(Step::Choose(rest.to_string())),
+        "type" => {
+            let (label, value) = rest.split_once('=').ok_or("--step type:LABEL=TEXT")?;
+            Ok(Step::Type(label.to_string(), value.to_string()))
+        }
+        "ok" => Ok(Step::Ok),
+        "cancel" => Ok(Step::Cancel),
+        _ => Err(format!("--step {text}: use click:LABEL, type:LABEL=TEXT, choose:ITEM, ok or cancel")),
+    }
+}
+
+/// Answers a script's dialogs from the `--step`s and prints each dialog it shows.
+struct DialogLog(vectorcraft_extendscript::driver::Scripted);
+
+impl vectorcraft_extendscript::Presenter for DialogLog {
+    fn next_event(&mut self, dialog: &vectorcraft_extendscript::Dialog) -> Result<vectorcraft_extendscript::Event, String> {
+        fn labels(w: &vectorcraft_extendscript::Widget, out: &mut Vec<String>) {
+            if !w.text.is_empty() {
+                out.push(format!("{}:{}", w.kind, w.text));
+            }
+            for c in &w.children {
+                labels(c, out);
+            }
+        }
+        let mut found = vec![];
+        labels(&dialog.root, &mut found);
+        outln!("{}", json!({"dialog": dialog.title, "controls": found}));
+        self.0.next_event(dialog)
+    }
 }
 
 fn bench(args: &[String]) -> Result<(), String> {
