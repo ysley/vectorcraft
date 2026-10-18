@@ -4620,3 +4620,7 @@ lighting	Light	ライト
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	スクリプトを実行
 	Run Script…	スクリプトを実行…
+@msg	A script is already running	スクリプトはすでに実行中です
+@msg	Running {name}…	{name} を実行中…
+@msg	Scripts need the desktop app	スクリプトにはデスクトップアプリが必要です
+@msg	{_1} finished	{_1} が完了しました

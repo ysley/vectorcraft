@@ -4984,3 +4984,7 @@ theme	Appearance	Външен вид
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Изпълни скрипт
 	Run Script…	Изпълни скрипт…
+@msg	A script is already running	Скрипт вече се изпълнява
+@msg	Running {name}…	Изпълнява се {name}…
+@msg	Scripts need the desktop app	Скриптовете изискват настолното приложение
+@msg	{_1} finished	{_1} приключи

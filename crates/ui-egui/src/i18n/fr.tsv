@@ -5001,3 +5001,7 @@ theme	Appearance	Apparence
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Exécuter le script
 	Run Script…	Exécuter le script…
+@msg	A script is already running	Un script est déjà en cours d’exécution
+@msg	Running {name}…	Exécution de {name}…
+@msg	Scripts need the desktop app	Les scripts nécessitent l’application de bureau
+@msg	{_1} finished	{_1} terminé

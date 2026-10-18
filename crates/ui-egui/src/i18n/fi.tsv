@@ -4966,3 +4966,7 @@ mark-style	Japanese	Japanilainen
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Suorita komentosarja
 	Run Script…	Suorita komentosarja…
+@msg	A script is already running	Komentosarja on jo käynnissä
+@msg	Running {name}…	Suoritetaan {name}…
+@msg	Scripts need the desktop app	Komentosarjat vaativat työpöytäsovelluksen
+@msg	{_1} finished	{_1} valmis

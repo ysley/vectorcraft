@@ -4969,3 +4969,7 @@ imageTrace	Outline	Körvonal
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Szkript futtatása
 	Run Script…	Szkript futtatása…
+@msg	A script is already running	Már fut egy szkript
+@msg	Running {name}…	{name} futtatása…
+@msg	Scripts need the desktop app	A szkriptekhez az asztali alkalmazás kell
+@msg	{_1} finished	{_1} befejeződött

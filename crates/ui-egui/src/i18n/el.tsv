@@ -4954,3 +4954,7 @@ effect	Points	Σημεία
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Εκτέλεση σεναρίου
 	Run Script…	Εκτέλεση σεναρίου…
+@msg	A script is already running	Ένα σενάριο εκτελείται ήδη
+@msg	Running {name}…	Εκτέλεση του {name}…
+@msg	Scripts need the desktop app	Τα σενάρια απαιτούν την εφαρμογή επιτραπέζου
+@msg	{_1} finished	Το {_1} ολοκληρώθηκε

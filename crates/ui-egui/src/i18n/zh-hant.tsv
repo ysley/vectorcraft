@@ -3897,3 +3897,7 @@ lighting	Light	光源
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	執行指令碼
 	Run Script…	執行指令碼…
+@msg	A script is already running	已有指令碼正在執行
+@msg	Running {name}…	正在執行 {name}…
+@msg	Scripts need the desktop app	指令碼需要桌面應用程式
+@msg	{_1} finished	{_1} 已完成

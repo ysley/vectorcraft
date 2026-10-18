@@ -4919,3 +4919,7 @@ mark-style	Japanese	Japonesas
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Executar Script
 	Run Script…	Executar Script…
+@msg	A script is already running	Um script já está em execução
+@msg	Running {name}…	Executando {name}…
+@msg	Scripts need the desktop app	Scripts exigem o aplicativo de desktop
+@msg	{_1} finished	{_1} concluído

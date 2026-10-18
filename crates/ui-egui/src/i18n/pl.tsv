@@ -4847,3 +4847,7 @@ mark-style	Japanese	Japońskie
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Uruchom skrypt
 	Run Script…	Uruchom skrypt…
+@msg	A script is already running	Skrypt już działa
+@msg	Running {name}…	Uruchamianie {name}…
+@msg	Scripts need the desktop app	Skrypty wymagają aplikacji na komputer
+@msg	{_1} finished	{_1} zakończono

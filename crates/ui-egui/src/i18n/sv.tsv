@@ -4958,3 +4958,7 @@ theme	Appearance	Utseende
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Kör skript
 	Run Script…	Kör skript…
+@msg	A script is already running	Ett skript körs redan
+@msg	Running {name}…	Kör {name}…
+@msg	Scripts need the desktop app	Skript kräver skrivbordsappen
+@msg	{_1} finished	{_1} klart

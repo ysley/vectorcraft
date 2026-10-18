@@ -4559,3 +4559,7 @@ theme	Appearance	Giao diện
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Chạy script
 	Run Script…	Chạy script…
+@msg	A script is already running	Một script đang chạy
+@msg	Running {name}…	Đang chạy {name}…
+@msg	Scripts need the desktop app	Script cần ứng dụng máy tính
+@msg	{_1} finished	{_1} đã xong

@@ -4109,3 +4109,7 @@ lighting	Light	光源
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	运行脚本
 	Run Script…	运行脚本…
+@msg	A script is already running	已有脚本正在运行
+@msg	Running {name}…	正在运行 {name}…
+@msg	Scripts need the desktop app	脚本需要桌面应用
+@msg	{_1} finished	{_1} 已完成

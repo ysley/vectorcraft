@@ -4559,3 +4559,7 @@ lighting	Light	Світло
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Запустити скрипт
 	Run Script…	Запустити скрипт…
+@msg	A script is already running	Скрипт уже виконується
+@msg	Running {name}…	Виконується {name}…
+@msg	Scripts need the desktop app	Скриптам потрібен настільний застосунок
+@msg	{_1} finished	{_1} завершено

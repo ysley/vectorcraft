@@ -4539,3 +4539,7 @@ theme	Appearance	Erscheinungsbild
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Skript ausführen
 	Run Script…	Skript ausführen…
+@msg	A script is already running	Ein Skript läuft bereits
+@msg	Running {name}…	{name} wird ausgeführt …
+@msg	Scripts need the desktop app	Skripte benötigen die Desktop-App
+@msg	{_1} finished	{_1} abgeschlossen

@@ -4543,3 +4543,7 @@ lighting	Light	광원
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	스크립트 실행
 	Run Script…	스크립트 실행…
+@msg	A script is already running	스크립트가 이미 실행 중입니다
+@msg	Running {name}…	{name} 실행 중…
+@msg	Scripts need the desktop app	스크립트는 데스크톱 앱이 필요합니다
+@msg	{_1} finished	{_1} 완료

@@ -5002,3 +5002,7 @@ mark-style	Japanese	Japonské
 # Run Script (File › Scripts): runs a script written for the reference app.
 	Run Script	Spustit skript
 	Run Script…	Spustit skript…
+@msg	A script is already running	Skript už běží
+@msg	Running {name}…	Spouští se {name}…
+@msg	Scripts need the desktop app	Skripty vyžadují desktopovou aplikaci
+@msg	{_1} finished	{_1} dokončeno
