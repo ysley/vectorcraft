@@ -115,31 +115,124 @@ mod native {
         events
     }
 
-    fn children(ui: &mut Ui, w: &Widget, path: &mut Vec<usize>, events: &mut Vec<Event>, edits: &mut HashMap<Vec<usize>, String>) {
+    type Edits = HashMap<Vec<usize>, String>;
+
+    fn text_width(ui: &Ui, text: &str) -> f32 {
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        ui.painter().layout_no_wrap(text.to_string(), font, egui::Color32::WHITE).size().x
+    }
+
+    /// How wide a control is without being stretched: the size the script gave it, else its text.
+    fn natural_width(ui: &Ui, w: &Widget) -> f32 {
+        if w.hidden {
+            return 0.0;
+        }
+        if w.size[0] > 0.0 {
+            return w.size[0] as f32;
+        }
+        let gap = w.spacing.unwrap_or(10.0) as f32;
+        let shown: Vec<f32> = w.children.iter().filter(|c| !c.hidden).map(|c| natural_width(ui, c)).collect();
+        match w.kind.as_str() {
+            "group" | "panel" if w.orientation == "row" => shown.iter().sum::<f32>() + gap * shown.len().saturating_sub(1) as f32,
+            "group" | "panel" => shown.iter().copied().fold(0.0, f32::max),
+            "button" => text_width(ui, &w.text) + 28.0,
+            "checkbox" | "radiobutton" => text_width(ui, &w.text) + 26.0,
+            "edittext" => 120.0,
+            "dropdownlist" | "listbox" => 140.0,
+            _ => text_width(ui, &w.text),
+        }
+    }
+
+    fn children(ui: &mut Ui, w: &Widget, path: &mut Vec<usize>, events: &mut Vec<Event>, edits: &mut Edits) {
+        let gap = w.spacing.unwrap_or(10.0) as f32;
+        ui.spacing_mut().item_spacing = egui::vec2(gap.min(8.0).max(2.0), gap.min(8.0).max(2.0));
+        let fill = w.align_children.to_lowercase().starts_with("fill");
+        let center = w.align_children.to_lowercase().starts_with("center");
         for (i, c) in w.children.iter().enumerate() {
             path.push(i);
-            widget(ui, c, path, events, edits);
+            let place = if c.alignment.is_empty() { None } else { Some(c.alignment.to_lowercase()) };
+            let place = place.as_deref().unwrap_or(if center { "center" } else { "" });
+            // A control placed to the right or in the middle of the width it is given.
+            let pad = if c.hidden || place.is_empty() || (fill && c.orientation != "row") {
+                0.0
+            } else {
+                let spare = ui.available_width() - natural_width(ui, c);
+                if place.starts_with("right") {
+                    spare.max(0.0)
+                } else if place.starts_with("center") && !fill_column(c) {
+                    (spare / 2.0).max(0.0)
+                } else {
+                    0.0
+                }
+            };
+            if pad > 0.5 && c.orientation == "row" {
+                ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    widget(ui, c, path, events, edits, false);
+                });
+            } else if pad > 0.5 {
+                ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    ui.vertical(|ui| widget(ui, c, path, events, edits, false));
+                });
+            } else {
+                widget(ui, c, path, events, edits, fill);
+            }
             path.pop();
         }
     }
 
-    fn widget(ui: &mut Ui, w: &Widget, path: &mut Vec<usize>, events: &mut Vec<Event>, edits: &mut HashMap<Vec<usize>, String>) {
+    /// A column that centres its own children takes the whole width instead of being centred.
+    fn fill_column(w: &Widget) -> bool {
+        w.kind == "group" && w.orientation != "row" && w.align_children.to_lowercase().starts_with("center")
+    }
+
+    fn pill_button(ui: &mut Ui, w: &Widget) -> egui::Response {
+        let h = if w.size[1] > 0.0 { w.size[1] as f32 } else { 26.0 };
+        let min = egui::vec2(if w.size[0] > 0.0 { w.size[0] as f32 } else { 0.0 }, h);
+        let line = ui.visuals().widgets.inactive.fg_stroke.color.gamma_multiply(0.55);
+        let button = egui::Button::new(&w.text).corner_radius(h / 2.0).stroke(egui::Stroke::new(1.0, line)).min_size(min);
+        ui.add_enabled(w.enabled, button)
+    }
+
+    fn widget(ui: &mut Ui, w: &Widget, path: &mut Vec<usize>, events: &mut Vec<Event>, edits: &mut Edits, fill: bool) {
         if w.hidden {
             return;
         }
         let id = Id::new(("script-widget", path.clone()));
         match w.kind.as_str() {
+            // An empty panel is how scripts draw a dividing line.
+            "panel" if w.text.is_empty() && w.children.is_empty() => {
+                ui.separator();
+            }
             "panel" => {
-                ui.group(|ui| {
+                let frame = ui.group(|ui| {
+                    if w.size[0] > 12.0 {
+                        ui.set_min_width(w.size[0] as f32 - 12.0);
+                    }
+                    if w.size[1] > 12.0 {
+                        ui.set_min_height(w.size[1] as f32 - 12.0);
+                    }
                     if !w.text.is_empty() {
                         ui.label(RichText::new(&w.text).strong());
                     }
                     ui.vertical(|ui| children(ui, w, path, events, edits));
                 });
+                let _ = frame;
+            }
+            "group" if w.orientation == "row" => {
+                if w.align_children.to_lowercase().starts_with("top") {
+                    ui.horizontal_top(|ui| children(ui, w, path, events, edits));
+                } else {
+                    ui.horizontal(|ui| children(ui, w, path, events, edits));
+                }
             }
             "group" => {
-                if w.orientation == "row" {
-                    ui.horizontal(|ui| children(ui, w, path, events, edits));
+                let width = if fill { ui.available_width() } else { natural_width(ui, w) };
+                if width > 0.0 && w.align_children.to_lowercase().starts_with("center") {
+                    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Center), |ui| {
+                        children(ui, w, path, events, edits)
+                    });
                 } else {
                     ui.vertical(|ui| children(ui, w, path, events, edits));
                 }
@@ -150,7 +243,21 @@ mod native {
             }
             "edittext" => {
                 let buf = edits.entry(path.clone()).or_insert_with(|| w.text.clone());
-                let r = ui.add_enabled(w.enabled, egui::TextEdit::singleline(buf).id(id));
+                let width = if w.size[0] > 0.0 { w.size[0] as f32 } else { 160.0 };
+                let r = if w.multiline {
+                    let height = if w.size[1] > 0.0 { w.size[1] as f32 } else { 120.0 };
+                    egui::ScrollArea::vertical()
+                        .id_salt(id)
+                        .min_scrolled_height(height)
+                        .max_height(height)
+                        .show(ui, |ui| {
+                            let rows = (height / 16.0).max(2.0) as usize;
+                            ui.add_enabled(w.enabled, egui::TextEdit::multiline(buf).id(id).desired_width(width).desired_rows(rows))
+                        })
+                        .inner
+                } else {
+                    ui.add_enabled(w.enabled, egui::TextEdit::singleline(buf).id(id).desired_width(width))
+                };
                 if r.lost_focus() && *buf != w.text {
                     events.push(Event::SetText(path.clone(), buf.clone()));
                 }
@@ -167,7 +274,7 @@ mod native {
                 }
             }
             "button" => {
-                if ui.add_enabled(w.enabled, egui::Button::new(&w.text)).clicked() {
+                if pill_button(ui, w).clicked() {
                     events.push(Event::Click(path.clone()));
                 }
             }

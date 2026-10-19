@@ -27,6 +27,9 @@ pub(crate) struct State {
     pub presenter: Option<Box<dyn Presenter>>,
     /// The script file being run, when it came from one.
     pub file: Option<std::path::PathBuf>,
+    /// The document's summary, kept until a command may have changed it: reading one property
+    /// of an item would otherwise summarise (or fetch) the whole document again.
+    pub doc_cache: Option<Rc<Value>>,
 }
 
 /// A handle the script's native functions share. The script runs on one thread and every
@@ -39,7 +42,7 @@ pub(crate) struct Host {
 
 impl Host {
     pub fn new(session: Session) -> Self {
-        Self { state: Rc::new(RefCell::new(State { session, backend: None, alerts: vec![], presenter: None, file: None })) }
+        Self { state: Rc::new(RefCell::new(State { session, backend: None, alerts: vec![], presenter: None, file: None, doc_cache: None })) }
     }
 
     pub fn set_file(&self, file: Option<std::path::PathBuf>) {
@@ -79,6 +82,7 @@ impl Host {
         let mut p = taken.ok_or_else(|| "this run cannot show dialogs".to_string())?;
         let event = p.next_event(dialog);
         if let Ok(mut st) = self.state.try_borrow_mut() {
+            st.doc_cache = None; // the user may have worked on the document meanwhile
             st.presenter = Some(p);
         }
         event
@@ -113,6 +117,7 @@ impl Host {
     /// toolbar's defaults), as it does when the user paints the selection: they are put back.
     pub fn exec(&self, command: &str, params: &Value) -> Result<Value, String> {
         let mut st = self.state.try_borrow_mut().map_err(|_| "the document is busy".to_string())?;
+        st.doc_cache = None;
         if let Some(b) = st.backend.as_mut() {
             return b.execute(command, params);
         }
@@ -120,13 +125,20 @@ impl Host {
     }
 
     /// The active document as the engine summarises it (`Null` without one).
-    pub fn document(&self) -> Value {
+    pub fn document(&self) -> Rc<Value> {
         match self.state.try_borrow_mut() {
-            Ok(mut st) => match st.backend.as_mut() {
-                Some(b) => b.document(),
-                None => inspect::document(&st.session),
-            },
-            Err(_) => Value::Null,
+            Ok(mut st) => {
+                if let Some(doc) = &st.doc_cache {
+                    return doc.clone();
+                }
+                let doc = Rc::new(match st.backend.as_mut() {
+                    Some(b) => b.document(),
+                    None => inspect::document(&st.session),
+                });
+                st.doc_cache = Some(doc.clone());
+                doc
+            }
+            Err(_) => Rc::new(Value::Null),
         }
     }
 
@@ -134,6 +146,7 @@ impl Host {
     /// a fresh empty session afterwards.
     pub fn take(&self) -> Result<(Session, Vec<String>), String> {
         let mut st = self.state.try_borrow_mut().map_err(|_| "the document is busy".to_string())?;
+        st.doc_cache = None;
         let session = std::mem::replace(&mut st.session, Session::new());
         Ok((session, std::mem::take(&mut st.alerts)))
     }

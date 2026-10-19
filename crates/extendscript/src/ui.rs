@@ -53,6 +53,13 @@ pub struct Widget {
     /// `ok` or `cancel` on a button that closes the dialog by itself.
     pub name: String,
     pub orientation: String,
+    /// `alignChildren` of a container (`center`, `fill`, `left`…), `alignment` of a control in its parent.
+    pub align_children: String,
+    pub alignment: String,
+    /// The gap between a container's children the script asked for, in points.
+    pub spacing: Option<f64>,
+    /// An edit field with `properties.multiline`: several lines, scrolling.
+    pub multiline: bool,
     /// The size the script asked for (`preferredSize`, else `size`), in points; zero is not set.
     pub size: [f64; 2],
     /// What the widget's `onDraw` painted, in its own coordinates.
@@ -176,6 +183,16 @@ fn snapshot_widget(o: &JsObject, depth: usize, ctx: &mut Context) -> JsResult<Wi
         enabled: bool_prop(o, js_string!("enabled"), true, ctx)?,
         name: string_prop(o, js_string!("__name"), ctx)?,
         orientation: string_prop(o, js_string!("orientation"), ctx)?,
+        align_children: string_prop(o, js_string!("alignChildren"), ctx)?,
+        alignment: string_prop(o, js_string!("alignment"), ctx)?,
+        spacing: {
+            let v = o.get(js_string!("spacing"), ctx)?;
+            if v.is_undefined() || v.is_null() { None } else { v.to_number(ctx).ok().filter(|n| n.is_finite() && *n >= 0.0) }
+        },
+        multiline: match object_prop(o, js_string!("properties"), ctx)? {
+            Some(p) => p.get(js_string!("multiline"), ctx)?.to_boolean(),
+            None => false,
+        },
         children,
     })
 }
@@ -507,6 +524,23 @@ fn container_add(this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResul
             widget.set(js_string!("__name"), JsString::from(name.to_string(ctx)?.to_std_string_escaped().to_lowercase().as_str()), false, ctx)?;
         }
         widget.set(js_string!("properties"), props, false, ctx)?;
+    }
+    // The second argument is the bounds `[left, top, right, bottom]` or the size `[width, height]`.
+    if let Some(b) = args.get(1).and_then(JsValue::as_object).filter(|b| b.is_array()) {
+        let mut n = [0.0f64; 4];
+        let len = b.get(js_string!("length"), ctx)?.to_length(ctx)?.min(4) as usize;
+        for (i, slot) in n.iter_mut().enumerate().take(len) {
+            let v = b.get(i as u32, ctx)?;
+            *slot = if v.is_undefined() { 0.0 } else { v.to_number(ctx)? };
+        }
+        let size = match len {
+            4 => Some([n[2] - n[0], n[3] - n[1]]),
+            2 => Some([n[0], n[1]]),
+            _ => None,
+        };
+        if let Some([w, h]) = size.filter(|[w, h]| w.is_finite() && h.is_finite() && (*w > 0.0 || *h > 0.0)) {
+            widget.set(js_string!("size"), JsArray::from_iter([JsValue::from(w), JsValue::from(h)], ctx), false, ctx)?;
+        }
     }
     widget.set(js_string!("parent"), me.clone(), false, ctx)?;
     let children = object_prop(&me, js_string!("children"), ctx)?.ok_or_else(|| error("this control cannot hold others"))?;

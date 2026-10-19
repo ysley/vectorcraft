@@ -122,7 +122,12 @@ fn build(cap: Cap, typename: &'static str, ctx: &mut Context) -> JsObject {
 fn current(cap: &Cap) -> JsResult<Value> {
     let id = cap.need()?;
     let doc = cap.host.document();
-    find_node(&doc, id).cloned().ok_or_else(|| error("the object no longer exists"))
+    // Without its children: a group's whole subtree is not copied to read one property of it.
+    let node = find_node(&doc, id).ok_or_else(|| error("the object no longer exists"))?;
+    Ok(match node.as_object() {
+        Some(m) => Value::Object(m.iter().filter(|(k, _)| k.as_str() != "children").map(|(k, v)| (k.clone(), v.clone())).collect()),
+        None => node.clone(),
+    })
 }
 
 fn node_name(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
