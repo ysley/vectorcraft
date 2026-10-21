@@ -24,6 +24,7 @@ mod preprocess;
 pub mod remote;
 pub mod ui;
 
+pub use fs::{PickKind, queue_pick_answers, set_path_picker};
 pub use host::{document_of, execute_on};
 pub use ui::{Dialog, Event, Presenter, Widget};
 

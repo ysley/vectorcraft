@@ -726,6 +726,9 @@ pub struct Prefs {
     pub zoom_with_mouse_wheel: bool,
     /// A horizontal drag on a numeric field or its label steps its value (#400).
     pub scrub_numeric_fields: bool,
+    /// A document that was never saved is saved as a PDF-compatible `.ai` (Illustrator opens it as
+    /// art), not as a `.vectorcraft` file, unless the save names another format.
+    pub save_new_as_illustrator: bool,
     /// Offset for Paste / duplicate (Illustrator pastes to the view centre; we offset by this).
     pub paste_offset: f64,
     // Selection & Anchor Display
@@ -981,6 +984,7 @@ impl Default for Prefs {
             scale_strokes: false,
             zoom_with_mouse_wheel: false,
             scrub_numeric_fields: true,
+            save_new_as_illustrator: false,
             paste_offset: 10.0,
             selection_tolerance: 3.0,
             object_selection_by_path_only: false,

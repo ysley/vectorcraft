@@ -215,6 +215,8 @@ pub fn save_plan(s: &Session, mode: SaveMode, p: &Value) -> Result<SavePlan> {
         },
         (_, Some(f), _) => checked(cmd, f)?,
         (_, None, Some(f)) => checked(cmd, f.id)?,
+        // A document never saved goes to `.ai` when the preference says so.
+        (_, None, None) if st.path.is_none() && st.format == "vectorcraft" && s.prefs.save_new_as_illustrator => checked(cmd, "ai")?,
         (_, None, None) => checked(cmd, st.format)?,
     };
     let mut given: Map<String, Value> = match p.get("options") {

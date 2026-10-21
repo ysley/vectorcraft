@@ -1362,4 +1362,3 @@ mod tests {
         assert_eq!(texts, ["Hello", "abcd"]);
     }
 }
-

@@ -1971,6 +1971,7 @@ default: in View › Pixel Preview at 600% zoom and above, a line at every docum
 `recentFontsCount`, `antiAliasedArtwork` (on by default; off, the canvas draws the art with hard edges — a pixel is
 painted when the art covers at least half of it — while raster effects and pattern tiles stay smooth; exports keep
 their own Anti-aliasing option),
+`saveNewAsIllustrator` (off by default: on, Save and Save As on a document that was never saved suggest a PDF-compatible `.ai` instead of `.vectorcraft`; a `format` or a path's extension still wins),
 `scrubNumericFields` (on: a horizontal drag on a numeric field's label steps the field, one undo step per drag; the
 control channel's `ui.drag` scrubs), `showHomeScreen` (on by default: the Home screen while no document is open;
 off, an empty window, and the Home button or `app.home` still shows the screen), `autoCollapseIconPanels` (off by

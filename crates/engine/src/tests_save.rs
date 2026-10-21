@@ -373,3 +373,17 @@ fn a_template_places_like_a_native_file() {
     let st = s.doc().unwrap();
     assert!(st.doc.node_count() > empty && !st.selection.is_empty(), "the template's art is placed and selected");
 }
+
+#[test]
+fn a_new_document_is_saved_as_ai_when_the_preference_says_so() {
+    let mut s = session();
+    rect(&mut s);
+    // Off by default: native.
+    assert_eq!(save_plan(&s, SaveMode::SaveAs, &json!({})).unwrap().format.id, "vectorcraft");
+    s.execute("prefs.set", &json!({"key": "saveNewAsIllustrator", "value": true})).unwrap();
+    let plan = save_plan(&s, SaveMode::SaveAs, &json!({})).unwrap();
+    assert_eq!((plan.format.id, plan.name.ends_with(".ai")), ("ai", true));
+    // A format or a path's extension still wins.
+    assert_eq!(save_plan(&s, SaveMode::SaveAs, &json!({"format": "svg"})).unwrap().format.id, "svg");
+    assert_eq!(save_plan(&s, SaveMode::SaveAs, &json!({"path": "/tmp/x.vectorcraft"})).unwrap().format.id, "vectorcraft");
+}

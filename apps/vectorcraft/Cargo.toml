@@ -19,6 +19,7 @@ windows7 = ["eframe/glow"]
 [dependencies]
 vectorcraft-engine = { workspace = true }
 vectorcraft-ui-egui = { workspace = true }
+vectorcraft-extendscript = { workspace = true }
 vectorcraft-text = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "wayland", "x11"] }
 egui = { workspace = true }

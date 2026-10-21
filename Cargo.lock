@@ -5103,6 +5103,7 @@ dependencies = [
  "serde_json",
  "socket2",
  "vectorcraft-engine",
+ "vectorcraft-extendscript",
  "vectorcraft-text",
  "vectorcraft-ui-egui",
  "wayland-client",

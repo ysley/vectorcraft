@@ -645,7 +645,24 @@ Without a window (converting, scripting, the MCP server), use vectorcraft-cli:
   vectorcraft-cli --help
 ";
 
+/// `Folder.selectDialog`, `File.openDialog` and `File.saveDialog` in a script: the native dialogs.
+/// A script runs on a thread of its own; macOS only shows these from the main thread, so there
+/// they answer as if cancelled.
+fn install_script_pickers() {
+    #[cfg(not(target_os = "macos"))]
+    vectorcraft_extendscript::set_path_picker(|kind, prompt| {
+        use vectorcraft_extendscript::PickKind;
+        let dialog = rfd::FileDialog::new().set_title(if prompt.is_empty() { "VectorCraft" } else { prompt });
+        match kind {
+            PickKind::Folder => dialog.pick_folder(),
+            PickKind::OpenFile => dialog.pick_file(),
+            PickKind::SaveFile => dialog.save_file(),
+        }
+    });
+}
+
 fn main() -> std::process::ExitCode {
+    install_script_pickers();
     // Validate roots before logging, font scans, preferences or the window: a missing value
     // must not clear an environment root and start the control channel without confinement.
     let mut control = automation_args::ControlArg::default();

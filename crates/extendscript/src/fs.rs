@@ -307,6 +307,69 @@ fn glob(pattern: &str, name: &str) -> bool {
     p.len() <= 256 && go(&p, &n)
 }
 
+/// What a script's chooser dialog asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickKind {
+    /// `Folder.selectDialog`.
+    Folder,
+    /// `File.openDialog`.
+    OpenFile,
+    /// `File.saveDialog`.
+    SaveFile,
+}
+
+type Picker = Box<dyn Fn(PickKind, &str) -> Option<PathBuf> + Send + Sync>;
+
+static PICKER: std::sync::Mutex<Option<Picker>> = std::sync::Mutex::new(None);
+static ANSWERS: std::sync::Mutex<std::collections::VecDeque<PathBuf>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// Who shows the chooser dialogs (`Folder.selectDialog`, `File.openDialog`, `File.saveDialog`):
+/// the app's native dialogs. Without one (and without [`queue_pick_answers`]) they return `null`,
+/// as when the user cancels.
+pub fn set_path_picker(picker: impl Fn(PickKind, &str) -> Option<PathBuf> + Send + Sync + 'static) {
+    if let Ok(mut p) = PICKER.lock() {
+        *p = Some(Box::new(picker));
+    }
+}
+
+/// Paths the next chooser dialogs answer with, in order, before the app's picker is asked: for
+/// runs with nobody at the screen (the command line, tests).
+pub fn queue_pick_answers(paths: impl IntoIterator<Item = PathBuf>) {
+    if let Ok(mut q) = ANSWERS.lock() {
+        q.extend(paths);
+    }
+}
+
+fn pick(kind: PickKind, prompt: &str) -> Option<PathBuf> {
+    if let Some(p) = ANSWERS.lock().ok().and_then(|mut q| q.pop_front()) {
+        return Some(p);
+    }
+    PICKER.lock().ok().and_then(|p| p.as_ref().and_then(|f| f(kind, prompt)))
+}
+
+fn pick_fn(host: &Host, kind: PickKind, ctx: &mut Context) -> JsValue {
+    NativeFunction::from_copy_closure_with_captures(
+        |_this, args, c: &(Host, u8), ctx| {
+            let prompt = match args.first() {
+                Some(v) if !v.is_undefined() && !v.is_null() => v.to_string(ctx)?.to_std_string_escaped(),
+                _ => String::new(),
+            };
+            let kind = match c.1 {
+                0 => PickKind::Folder,
+                1 => PickKind::OpenFile,
+                _ => PickKind::SaveFile,
+            };
+            Ok(match pick(kind, &prompt) {
+                Some(path) => make(&c.0, path, kind == PickKind::Folder, ctx).into(),
+                None => JsValue::null(),
+            })
+        },
+        (host.clone(), kind as u8),
+    )
+    .to_js_function(ctx.realm())
+    .into()
+}
+
 pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
     for folder in [false, true] {
         let make_fn = NativeFunction::from_copy_closure_with_captures(
@@ -333,6 +396,7 @@ pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
                 let o = make(host, p, true, ctx);
                 ctor.set(JsString::from(k), o, false, ctx)?;
             }
+            ctor.set(js_string!("selectDialog"), pick_fn(host, PickKind::Folder, ctx), false, ctx)?;
             ctor.set(
                 js_string!("fs"),
                 JsString::from(if cfg!(windows) {
@@ -346,9 +410,8 @@ pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
                 ctx,
             )?;
         } else {
-            for k in ["openDialog", "saveDialog"] {
-                let nothing = NativeFunction::from_fn_ptr(|_, _, _| Ok(JsValue::null())).to_js_function(ctx.realm());
-                ctor.set(JsString::from(k), nothing, false, ctx)?;
+            for (k, kind) in [("openDialog", PickKind::OpenFile), ("saveDialog", PickKind::SaveFile)] {
+                ctor.set(JsString::from(k), pick_fn(host, kind, ctx), false, ctx)?;
             }
         }
         ctx.register_global_property(JsString::from(name), ctor, Attribute::all())?;
@@ -398,5 +461,13 @@ mod tests {
         let mut s = Session::new();
         let out = run(&mut s, "var f = new File('/no/such/file.txt'); [f.exists, f.open('r'), f.fsName.length > 0].join('|');").unwrap();
         assert_eq!(out.value, "false|false|true");
+    }
+    #[test]
+    fn chooser_dialogs_answer_with_the_queued_paths_and_null_when_cancelled() {
+        let dir = tmp("pick");
+        super::queue_pick_answers([dir.clone()]);
+        let mut s = Session::new();
+        let src = "var f = Folder.selectDialog('Pasta'); var g = Folder.selectDialog('Outra'); [f.typename, f.exists, g === null].join('|');";
+        assert_eq!(run(&mut s, src).unwrap().value, "Folder|true|true");
     }
 }

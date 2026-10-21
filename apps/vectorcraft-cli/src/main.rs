@@ -82,11 +82,11 @@ USAGE:
       order, export each FILE in the format its extension picks (see Writable formats). Prints one
       JSON result per step.
 
-  vectorcraft-cli script FILE.jsx [--in FILE] [--select-all] [--step S]... [--export FILE]... [--save FILE] [--scale N]
+  vectorcraft-cli script FILE.jsx [--in FILE] [--select-all] [--step S]... [--pick PATH]... [--export FILE]... [--save FILE] [--scale N]
       Run a script written for the reference app's scripting (.jsx) headless: open FILE or start a
       new document, run the script against it, then export and save as asked. Prints the script's
       alert() texts and its last value as JSON lines. --select-all selects everything first, for
-      scripts that work on the selection. A script's dialogs are answered by --step (click:LABEL, type:LABEL=TEXT, choose:ITEM, ok, cancel); each dialog shown is printed. Not supported yet: File and Folder,
+      scripts that work on the selection. Folder.selectDialog, File.openDialog and File.saveDialog answer with the --pick paths in order (null once they run out). A script's dialogs are answered by --step (click:LABEL, type:LABEL=TEXT, choose:ITEM, ok, cancel); each dialog shown is printed. Not supported yet: File and Folder,
       $.evalFile, E4X; the error names what is missing. See vectorcraft-scriptcheck for what a
       script needs before you run it.
 
@@ -389,11 +389,13 @@ fn script(args: &[String]) -> Result<(), String> {
     let mut save: Option<String> = None;
     let mut scale = 1.0;
     let mut dialog_steps: Vec<vectorcraft_extendscript::driver::Step> = vec![];
+    let mut picks: Vec<std::path::PathBuf> = vec![];
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut val = |what: &str| it.next().cloned().ok_or_else(|| format!("{a} needs {what}"));
         match a.as_str() {
             "--step" => dialog_steps.push(parse_step(&val("a step")?)?),
+            "--pick" => picks.push(std::path::PathBuf::from(val("a path")?)),
             "--in" | "-i" => input = Some(val("a file")?),
             "--select-all" => select_all = true,
             "--export" | "-o" => exports.push(val("a file")?),
@@ -407,6 +409,7 @@ fn script(args: &[String]) -> Result<(), String> {
         }
     }
     let file = file.ok_or("script needs a FILE.jsx")?;
+    vectorcraft_extendscript::queue_pick_answers(picks);
     let bytes = std::fs::read(&file).map_err(|e| format!("read {file}: {e}"))?;
     // Scripts come as UTF-8, often with a byte order mark.
     let source = String::from_utf8_lossy(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes)).into_owned();
