@@ -8,17 +8,18 @@
 //! from its public scripting reference, and what a script sees beyond them is what VectorCraft
 //! does. `vectorcraft-scriptcheck` reports, before a run, what a script uses.
 //!
-//! Not supported yet: `File` and `Folder`, `$.evalFile`, text, artboards,
-//! geometry and the E4X XML literals; a script that uses them fails with the engine's error
-//! naming the missing object.
+//! Not supported yet: the E4X XML literals and what `docs/extendscript.md` lists; a script that
+//! uses them fails with the engine's error naming the missing object.
 #![forbid(unsafe_code)]
 
+mod appobj;
 mod dom;
 pub mod driver;
 mod fs;
 mod geom;
 mod host;
 mod node;
+mod nodeops;
 mod preprocess;
 pub mod remote;
 pub mod ui;

@@ -8,6 +8,7 @@ use crate::{
     dom::{Cap, Obj, array_of_numbers, children, collection, error, exec, find_node, find_parent, is_layer, number, number_at, text},
     geom::Origin,
     host::Host,
+    nodeops,
 };
 
 /// Does this node summary describe a path?
@@ -16,6 +17,10 @@ pub(crate) fn is_path(n: &Value) -> bool {
 }
 
 /// The scripting type name of a node summary.
+pub(crate) fn typename_of(n: &Value) -> &'static str {
+    typename(n)
+}
+
 fn typename(n: &Value) -> &'static str {
     if is_path(n) {
         return "PathItem";
@@ -47,18 +52,80 @@ fn no_color(ctx: &mut Context) -> JsObject {
     Obj::plain(ctx).value("typename", js_string!("NoColor")).build()
 }
 
-/// The scripting object of an existing node.
+/// The scripting object of an existing node of the active document.
 pub(crate) fn node_object(host: &Host, node: &Value, ctx: &mut Context) -> JsObject {
     let id = node.get("id").and_then(Value::as_u64);
     build(Cap::new(host, id), typename(node), ctx)
+}
+
+/// The scripting object of the node with this id in the document `uid`, which is made the active
+/// one to read it and left active.
+pub(crate) fn object_in(host: &Host, uid: u64, id: u64, ctx: &mut Context) -> JsResult<JsValue> {
+    let before = host.active_uid();
+    host.activate(uid).map_err(error)?;
+    let doc = host.document();
+    let found = find_node(&doc, id).map(|n| build(Cap::of_doc(host, uid, Some(id)), typename(n), ctx));
+    if let Some(b) = before {
+        let _ = host.activate(b);
+    }
+    found.map(Into::into).ok_or_else(|| error("the new object cannot be found"))
 }
 
 /// An object that exists in the script before it has content: `pathItems.add()` and
 /// `textFrames.add()`. The document gets it when its first content arrives (`setEntirePath`,
 /// `contents`).
 pub(crate) fn pending(host: &Host, kind: &str, ctx: &mut Context) -> JsObject {
+    pending_in(host, kind, None, ctx)
+}
+
+/// The same inside a layer or group.
+pub(crate) fn pending_in(host: &Host, kind: &str, container: Option<u64>, ctx: &mut Context) -> JsObject {
     let name = if kind == "Type" { "TextFrame" } else { "PathItem" };
-    build(Cap::new(host, None), name, ctx)
+    let mut cap = Cap::new(host, None);
+    cap.extra = Some(std::rc::Rc::new(Container(container)));
+    build(cap, name, ctx)
+}
+
+/// Where an object from `add()` goes once it has content.
+pub(crate) struct Container(pub Option<u64>);
+
+/// `groupItems.add()`.
+pub(crate) fn pending_group(cap: &Cap, container: Option<u64>, ctx: &mut Context) -> JsObject {
+    nodeops::pending_group(cap, container, ctx)
+}
+
+pub(crate) fn build_pending_group(cap: Cap, ctx: &mut Context) -> JsObject {
+    Obj::new(ctx, &cap)
+        .value("typename", js_string!("GroupItem"))
+        .hidden_method("__id", |cap, _, _| Ok(cap.id().map_or(JsValue::null(), |i| JsValue::from(i as f64))))
+        .hidden_method("__doc", |cap, _, _| Ok(cap.doc.map_or(JsValue::null(), |u| JsValue::from(u as f64))))
+        .hidden_method("__pending", |cap, _, _| Ok(JsValue::from(f64::from(cap.state::<nodeops::Pending>()?.token.get()))))
+        .get_set("name", pending_name, set_pending_name)
+        .get("pathItems", path_items)
+        .get("textFrames", |cap, ctx| {
+            let list = nodeops::kind_items(cap, "TextFrame", ctx)?;
+            crate::dom::add_method(&list, "add", cap, |cap, _args, ctx| Ok(pending_in(&cap.host, "Type", cap.id(), ctx).into()), ctx)?;
+            Ok(list.into())
+        })
+        .method("move", 2, nodeops::move_to_target)
+        .build()
+}
+
+fn pending_name(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
+    if cap.id().is_some() {
+        return node_name(cap, _ctx);
+    }
+    let p = cap.state::<nodeops::Pending>()?;
+    Ok(text(p.name.borrow().as_deref().unwrap_or_default()))
+}
+
+fn set_pending_name(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
+    if cap.id().is_some() {
+        return set_node_name(cap, v, ctx);
+    }
+    let p = cap.state::<nodeops::Pending>()?;
+    *p.name.borrow_mut() = Some(v.to_string(ctx)?.to_std_string_escaped());
+    Ok(())
 }
 
 pub(crate) fn by_id(host: &Host, id: u64, ctx: &mut Context) -> JsResult<JsValue> {
@@ -68,17 +135,35 @@ pub(crate) fn by_id(host: &Host, id: u64, ctx: &mut Context) -> JsResult<JsValue
 }
 
 fn build(cap: Cap, typename: &'static str, ctx: &mut Context) -> JsObject {
-    Obj::new(ctx, &cap)
+    let container = matches!(typename, "Layer" | "GroupItem");
+    let mut o = Obj::new(ctx, &cap)
         .value("typename", boa_engine::JsString::from(typename))
+        .hidden_method("__id", |cap, _, _| Ok(cap.id().map_or(JsValue::null(), |i| JsValue::from(i as f64))))
+        .hidden_method("__doc", |cap, _, _| Ok(cap.doc.map_or(JsValue::null(), |u| JsValue::from(u as f64))))
+        .hidden_method("__pending", |_, _, _| Ok(JsValue::null()))
         .get_set("name", node_name, set_node_name)
         .get_set("visible", |cap, _| Ok(flag(cap, "visible")?.into()), |cap, v, _| set_flag(cap, "visible", v.to_boolean()))
         .get_set("hidden", |cap, _| Ok((!flag(cap, "visible")?).into()), |cap, v, _| set_flag(cap, "visible", !v.to_boolean()))
         .get_set("locked", |cap, _| Ok(flag(cap, "locked")?.into()), |cap, v, _| set_flag(cap, "locked", v.to_boolean()))
+        .get_set("selected", |cap, _| Ok(nodeops::is_selected(cap)?.into()), |cap, v, _| nodeops::set_selected(cap, v.to_boolean()))
+        .get_set(
+            "opacity",
+            |cap, _| Ok((current(cap)?.get("opacity").and_then(Value::as_f64).unwrap_or(1.0) * 100.0).into()),
+            |cap, v, ctx| {
+                let pct = number(v, ctx)?.clamp(0.0, 100.0);
+                exec(cap, "object.setProps", json!({"id": cap.need()?, "opacity": pct})).map(|_| ())
+            },
+        )
         .get("layers", node_layers)
         .get("pageItems", node_page_items)
         .get("parent", node_parent)
+        .get("layer", node_layer)
+        .get("clipped", |cap, _| Ok((current(cap)?.get("kind").and_then(Value::as_str) == Some("Clip Group")).into()))
+        .get("clipping", |cap, _| Ok(nodeops::is_clipping(&cap.host.document(), cap.need()?).into()))
+        .get("guides", |cap, _| Ok(current(cap)?.get("guide").and_then(Value::as_bool).unwrap_or(false).into()))
         .get("geometricBounds", node_bounds)
         .get("visibleBounds", node_bounds)
+        .get("controlBounds", node_bounds)
         .get("width", |cap, _| {
             let b = bounds_of(cap)?;
             Ok((b[2] - b[0]).into())
@@ -87,19 +172,23 @@ fn build(cap: Cap, typename: &'static str, ctx: &mut Context) -> JsObject {
             let b = bounds_of(cap)?;
             Ok((b[1] - b[3]).into())
         })
-        .get("position", |cap, ctx| {
-            let b = bounds_of(cap)?;
-            Ok(array_of_numbers(&[b[0], b[1]], ctx))
-        })
+        .get_set(
+            "position",
+            |cap, ctx| {
+                let b = bounds_of(cap)?;
+                Ok(array_of_numbers(&[b[0], b[1]], ctx))
+            },
+            |cap, v, ctx| move_to(cap, Some(number_at(v, 0, ctx)?), Some(number_at(v, 1, ctx)?)),
+        )
         .get_set("top", |cap, _| Ok(bounds_of(cap)?[1].into()), |cap, v, ctx| move_to(cap, None, Some(number(v, ctx)?)))
         .get_set("left", |cap, _| Ok(bounds_of(cap)?[0].into()), |cap, v, ctx| move_to(cap, Some(number(v, ctx)?), None))
         .method("translate", 2, translate)
-        .method("rotate", 1, rotate)
+        .method("rotate", 1, nodeops::rotate)
+        .method("resize", 2, nodeops::resize)
+        .method("move", 2, nodeops::move_to_target)
+        .method("duplicate", 2, nodeops::duplicate)
         .method("zOrder", 1, z_order)
-        .method("remove", 0, |cap, _args, _ctx| {
-            exec(cap, "edit.clear", json!({"ids": [cap.need()?]}))?;
-            Ok(JsValue::undefined())
-        })
+        .method("remove", 0, remove)
         .get_set("fillColor", |cap, ctx| live_color(cap, Slot::Fill, ctx), |cap, v, ctx| set_color(cap, Slot::Fill, v, ctx))
         .get_set("strokeColor", |cap, ctx| live_color(cap, Slot::Stroke, ctx), |cap, v, ctx| set_color(cap, Slot::Stroke, v, ctx))
         .get_set(
@@ -112,10 +201,60 @@ fn build(cap: Cap, typename: &'static str, ctx: &mut Context) -> JsObject {
         )
         .get_set("filled", |cap, _| Ok(has_paint(cap, Slot::Fill)?.into()), |cap, v, _| set_painted(cap, Slot::Fill, v.to_boolean()))
         .get_set("stroked", |cap, _| Ok(has_paint(cap, Slot::Stroke)?.into()), |cap, v, _| set_painted(cap, Slot::Stroke, v.to_boolean()))
+        // The engine keeps no overprint switches a script could flip here: read as off, accepted.
+        .get_set("overprintFill", |_, _| Ok(false.into()), |_, _, _| Ok(()))
+        .get_set("overprintStroke", |_, _| Ok(false.into()), |_, _, _| Ok(()))
         .method("setEntirePath", 1, set_entire_path)
         .get_set("contents", contents, set_contents)
-        .get("textRange", text_range)
-        .build()
+        .get("textRange", text_range);
+    if container || typename == "CompoundPathItem" {
+        o = o.get("pathItems", path_items);
+    }
+    if container {
+        o = o
+            .get("groupItems", |cap, ctx| {
+                let list = nodeops::kind_items(cap, "GroupItem", ctx)?;
+                crate::dom::add_method(&list, "add", cap, |cap, _args, ctx| Ok(pending_group(cap, cap.id(), ctx).into()), ctx)?;
+                Ok(list.into())
+            })
+            .get("compoundPathItems", |cap, ctx| Ok(nodeops::kind_items(cap, "CompoundPathItem", ctx)?.into()))
+            .get("rasterItems", |cap, ctx| Ok(nodeops::kind_items(cap, "RasterItem", ctx)?.into()))
+            .get("placedItems", |cap, ctx| Ok(nodeops::kind_items(cap, "PlacedItem", ctx)?.into()))
+            .get("symbolItems", |cap, ctx| Ok(nodeops::kind_items(cap, "SymbolItem", ctx)?.into()))
+            .get("textFrames", |cap, ctx| {
+                let list = nodeops::kind_items(cap, "TextFrame", ctx)?;
+                crate::dom::add_method(&list, "add", cap, |cap, _args, ctx| Ok(pending_in(&cap.host, "Type", cap.id(), ctx).into()), ctx)?;
+                Ok(list.into())
+            });
+    }
+    o.build()
+}
+
+/// The paths directly inside a layer, group or compound path, with `add()` and `rectangle()`.
+fn path_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let list = nodeops::kind_items(cap, "PathItem", ctx)?;
+    crate::dom::add_method(&list, "add", cap, |cap, _args, ctx| Ok(pending_in(&cap.host, "Path", cap.id(), ctx).into()), ctx)?;
+    crate::dom::add_method(&list, "rectangle", cap, crate::dom::path_rectangle_in, ctx)?;
+    Ok(list.into())
+}
+
+fn node_layer(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let lid = nodeops::layer_of(&doc, cap.need()?).ok_or_else(|| error("the object is not in a layer"))?;
+    let node = find_node(&doc, lid).ok_or_else(|| error("the layer no longer exists"))?;
+    Ok(node_object(&cap.host, node, ctx).into())
+}
+
+/// `remove()`: a layer goes with its contents, anything else is deleted.
+fn remove(cap: &Cap, _args: &[JsValue], _ctx: &mut Context) -> JsResult<JsValue> {
+    let id = cap.need()?;
+    let is_layer_node = find_node(&cap.host.document(), id).is_some_and(is_layer);
+    if is_layer_node {
+        exec(cap, "layer.delete", json!({"ids": [id]}))?;
+    } else {
+        exec(cap, "edit.clear", json!({"ids": [id]}))?;
+    }
+    Ok(JsValue::undefined())
 }
 
 /// The node's current summary, or an error when it does not exist (yet, or any more).
@@ -130,8 +269,12 @@ fn current(cap: &Cap) -> JsResult<Value> {
     })
 }
 
+/// A layer always has a name; anything else only when one was given: an object the user did not
+/// name reads as "" (the Layers panel shows its kind or its text, which is not its name).
 fn node_name(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
-    Ok(text(current(cap)?.get("name").and_then(Value::as_str).unwrap_or_default()))
+    let node = current(cap)?;
+    let named = node.get("named").and_then(Value::as_bool).unwrap_or(false) || node.get("kind").and_then(Value::as_str) == Some("Layer");
+    Ok(text(if named { node.get("name").and_then(Value::as_str).unwrap_or_default() } else { "" }))
 }
 
 fn set_node_name(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
@@ -160,15 +303,26 @@ fn node_parent(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
 
 /// The sublayers of a layer.
 fn node_layers(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let node = current(cap)?;
-    let objects = children(&node).into_iter().filter(|c| is_layer(c)).map(|c| node_object(&cap.host, c, ctx)).collect();
+    // `current` leaves the children out; the list itself needs them.
+    let (id, doc) = (cap.need()?, cap.host.document());
+    let node = find_node(&doc, id).ok_or_else(|| error("the object no longer exists"))?;
+    let objects = children(node).into_iter().filter(|c| is_layer(c)).map(|c| node_object(&cap.host, c, ctx)).collect();
     Ok(collection(objects, ctx)?.into())
 }
 
 /// The items directly inside a layer or group.
 fn node_page_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let node = current(cap)?;
-    let objects = children(&node).into_iter().filter(|c| !is_layer(c)).map(|c| node_object(&cap.host, c, ctx)).collect();
+    let (id, doc) = (cap.need()?, cap.host.document());
+    let node = find_node(&doc, id).ok_or_else(|| error("the object no longer exists"))?;
+    let mut items: Vec<&Value> = children(node).into_iter().filter(|c| !is_layer(c)).collect();
+    // The clipping path of a clip group is its first item, the way the reference app lists it
+    // (the engine keeps it at the bottom).
+    if node.get("kind").and_then(Value::as_str) == Some("Clip Group")
+        && let Some(mask) = items.pop()
+    {
+        items.insert(0, mask);
+    }
+    let objects = items.into_iter().map(|c| node_object(&cap.host, c, ctx)).collect();
     Ok(collection(objects, ctx)?.into())
 }
 
@@ -207,13 +361,6 @@ fn translate(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue
     Ok(JsValue::undefined())
 }
 
-/// `rotate(angle)`: counter-clockwise degrees about the centre.
-fn rotate(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-    let angle = number(args.first().unwrap_or(&JsValue::undefined()), ctx)?;
-    exec(cap, "object.rotate", json!({"ids": [cap.need()?], "angle": angle}))?;
-    Ok(JsValue::undefined())
-}
-
 /// `zOrder(ZOrderMethod.SENDTOBACK)` and its siblings.
 fn z_order(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let method = args.first().cloned().unwrap_or_default().to_string(ctx)?.to_std_string_escaped();
@@ -248,6 +395,7 @@ fn set_entire_path(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<J
     }
     let made = exec(cap, "path.create", json!({"anchors": anchors, "closed": false}))?;
     cap.bind(made.get("id").and_then(Value::as_u64).ok_or_else(|| error("the path was not created"))?);
+    finish_pending(cap)?;
     Ok(JsValue::undefined())
 }
 
@@ -305,11 +453,16 @@ fn rgb_of(cap: &Cap, slot: Slot) -> JsResult<Option<[u8; 3]>> {
 }
 
 fn write_paint(cap: &Cap, slot: Slot, rgb: [u8; 3]) -> JsResult<()> {
+    write_color(cap, slot, json!(hex(rgb)))
+}
+
+/// Paint with a colour in the engine's own words (`"#rrggbb"`, `{c, m, y, k}`…).
+fn write_color(cap: &Cap, slot: Slot, color: Value) -> JsResult<()> {
     let id = cap.need()?;
     match slot {
-        Slot::Fill => exec(cap, "paint.setFill", json!({"ids": [id], "color": hex(rgb)})),
-        Slot::Stroke => exec(cap, "paint.setStroke", json!({"ids": [id], "color": hex(rgb)})),
-        Slot::Char => exec(cap, "text.setStyle", json!({"id": id, "fill": hex(rgb)})),
+        Slot::Fill => exec(cap, "paint.setFill", json!({"ids": [id], "color": color})),
+        Slot::Stroke => exec(cap, "paint.setStroke", json!({"ids": [id], "color": color})),
+        Slot::Char => exec(cap, "text.setStyle", json!({"id": id, "fill": color})),
     }
     .map(|_| ())
 }
@@ -359,6 +512,13 @@ fn set_color(cap: &Cap, slot: Slot, v: &JsValue, ctx: &mut Context) -> JsResult<
             let rgb = [channel(js_string!("red"))?, channel(js_string!("green"))?, channel(js_string!("blue"))?];
             write_paint(cap, slot, rgb)
         }
+        "CMYKColor" => {
+            // Percentages, as the reference app's CMYKColor holds them.
+            let mut channel = |key: boa_engine::JsString| -> JsResult<f64> { Ok(number(&obj.get(key, ctx)?, ctx)?.clamp(0.0, 100.0)) };
+            let (c, m, y, k) =
+                (channel(js_string!("cyan"))?, channel(js_string!("magenta"))?, channel(js_string!("yellow"))?, channel(js_string!("black"))?);
+            write_color(cap, slot, json!({"c": c, "m": m, "y": y, "k": k}))
+        }
         other => Err(error(format!("{other} is not supported yet"))),
     }
 }
@@ -403,9 +563,16 @@ fn set_contents(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
             let made = exec(cap, "text.create", json!({"x": x, "y": y, "text": contents}))?;
             let id = made.get("id").and_then(Value::as_u64).or_else(|| made.get("ids").and_then(|i| i.get(0)).and_then(Value::as_u64));
             cap.bind(id.ok_or_else(|| error("the text was not created"))?);
-            Ok(())
+            finish_pending(cap)
         }
     }
+}
+
+/// An object from `add()` in a layer or group goes there once it exists.
+fn finish_pending(cap: &Cap) -> JsResult<()> {
+    let Some(Container(Some(c))) = cap.extra.as_ref().and_then(|e| e.downcast_ref::<Container>()).map(|c| Container(c.0)) else { return Ok(()) };
+    let target = nodeops::Ref::Node { doc: cap.doc, id: Some(c), pending: None };
+    nodeops::adopt(cap, &target, cap.need()?, nodeops::Place::Begin)
 }
 
 fn text_range(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
@@ -413,6 +580,14 @@ fn text_range(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
         .set_only("size", |cap, v, ctx| {
             let size = number(v, ctx)?;
             exec(cap, "text.setStyle", json!({"id": cap.need()?, "size": size})).map(|_| ())
+        })
+        .set_only("textFont", |cap, v, ctx| {
+            // A font object from `app.textFonts.getByName()`, or a name.
+            let name = match v.as_object() {
+                Some(o) => o.get(js_string!("name"), ctx)?.to_string(ctx)?.to_std_string_escaped(),
+                None => v.to_string(ctx)?.to_std_string_escaped(),
+            };
+            exec(cap, "text.setStyle", json!({"id": cap.need()?, "font": name})).map(|_| ())
         })
         .get_set("fillColor", |cap, ctx| live_color(cap, Slot::Char, ctx), |cap, v, ctx| set_color(cap, Slot::Char, v, ctx))
         .build();

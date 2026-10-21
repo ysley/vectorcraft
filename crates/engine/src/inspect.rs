@@ -42,6 +42,10 @@ pub fn node_summary_opts(n: &Node, opts: SummaryOpts, symbols: &SymbolBoxes) -> 
         "locked": n.locked,
         "bounds": rect_json(n.geometric_bounds_with(symbols)),
     });
+    // The name was given, not made up from the kind or the text: what scripts read as `name`.
+    if n.name.is_some() {
+        v["named"] = json!(true);
+    }
     if n.opacity < 1.0 {
         v["opacity"] = json!(n.opacity);
     }
@@ -87,9 +91,16 @@ pub fn node_summary_opts(n: &Node, opts: SummaryOpts, symbols: &SymbolBoxes) -> 
             v["dimImages"] = json!(dim_images);
             v["clip"] = json!(clip);
         }
-        NodeKind::Path { path, .. } => {
+        NodeKind::Path { path, clipping, guide, .. } => {
             v["anchors"] = json!(path.anchor_count());
             v["closed"] = json!(path.is_closed());
+            // What scripts read as `clipping` and `guides`.
+            if *clipping {
+                v["clipping"] = json!(true);
+            }
+            if *guide {
+                v["guide"] = json!(true);
+            }
         }
         NodeKind::Text(t) => {
             v["text"] = json!(t.plain_text());
@@ -135,6 +146,11 @@ pub fn document_opts(s: &Session, opts: SummaryOpts) -> Value {
     let d = &st.doc;
     let symbols = d.symbol_boxes();
     json!({
+        // Which document this is, and the ones open (scripts hold documents by `uid`: their
+        // positions shift when one closes).
+        "uid": st.uid,
+        "activeIndex": s.active_index(),
+        "documents": s.documents().iter().map(|d| json!({"uid": d.uid, "title": d.title(), "path": d.path})).collect::<Vec<_>>(),
         "title": st.title(),
         "path": st.path,
         "dirty": st.is_dirty(),

@@ -460,11 +460,15 @@ fn make_widget(kind: &str, text: Option<String>, ctx: &mut Context) -> JsResult<
     let children = JsArray::new(ctx)?;
     let items = JsArray::new(ctx)?;
     let (preferred, size) = (dimension(ctx)?, dimension(ctx)?);
+    // Scripts set `minimumSize.height = 2` and the like; the presenter does not read them.
+    let (minimum, maximum) = (dimension(ctx)?, dimension(ctx)?);
     let graphics = make_graphics(ctx)?;
     let mut init = ObjectInitializer::new(ctx);
     init.property(js_string!("graphics"), graphics, Attribute::all());
     init.property(js_string!("preferredSize"), preferred, Attribute::all());
     init.property(js_string!("size"), size, Attribute::all());
+    init.property(js_string!("minimumSize"), minimum, Attribute::all());
+    init.property(js_string!("maximumSize"), maximum, Attribute::all());
     init.property(js_string!("type"), JsString::from(kind), Attribute::all());
     init.property(js_string!("text"), JsString::from(text.unwrap_or_default().as_str()), Attribute::all());
     init.property(js_string!("enabled"), true, Attribute::all());

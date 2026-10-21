@@ -40,20 +40,56 @@ pub(crate) struct Cap {
     /// State of an object that is not a document item (an open file), shared by its functions.
     #[unsafe_ignore_trace]
     pub extra: Option<Rc<dyn std::any::Any>>,
+    /// The document the object belongs to (`uid`): it is made the active one while the object
+    /// works and the previous one comes back after, as the reference app lets a script use a
+    /// document that is not in front.
+    #[unsafe_ignore_trace]
+    pub doc: Option<u64>,
 }
 
 impl Cap {
     pub fn new(host: &Host, id: Option<u64>) -> Self {
-        Self { host: host.clone(), id: Rc::new(Cell::new(id)), tag: 0, extra: None }
+        Self { host: host.clone(), id: Rc::new(Cell::new(id)), tag: 0, extra: None, doc: host.active_uid() }
+    }
+
+    /// An object that belongs to the application, not to a document.
+    pub fn app(host: &Host) -> Self {
+        Self { host: host.clone(), id: Rc::new(Cell::new(None)), tag: 0, extra: None, doc: None }
+    }
+
+    /// A group made before it has content: its id is set when it gets some.
+    pub fn pending(host: &Host, doc: Option<u64>, id: Rc<Cell<Option<u64>>>, state: Rc<dyn std::any::Any>) -> Self {
+        Self { host: host.clone(), id, tag: 0, extra: Some(state), doc }
+    }
+
+    /// An object of the document with this `uid`.
+    pub fn of_doc(host: &Host, uid: u64, id: Option<u64>) -> Self {
+        Self { host: host.clone(), id: Rc::new(Cell::new(id)), tag: 0, extra: None, doc: Some(uid) }
     }
 
     pub fn with_tag(&self, tag: u8) -> Self {
-        Self { host: self.host.clone(), id: Rc::clone(&self.id), tag, extra: self.extra.clone() }
+        Self { host: self.host.clone(), id: Rc::clone(&self.id), tag, extra: self.extra.clone(), doc: self.doc }
     }
 
     /// A capture carrying `state` for the object's functions.
     pub fn with_state(host: &Host, state: Rc<dyn std::any::Any>) -> Self {
-        Self { host: host.clone(), id: Rc::new(Cell::new(None)), tag: 0, extra: Some(state) }
+        Self { host: host.clone(), id: Rc::new(Cell::new(None)), tag: 0, extra: Some(state), doc: None }
+    }
+
+    /// Run `f` with this object's document in front, then put the document that was in front back.
+    pub fn scoped<T>(&self, f: impl FnOnce() -> JsResult<T>) -> JsResult<T> {
+        let Some(uid) = self.doc else { return f() };
+        let before = self.host.active_uid();
+        if before == Some(uid) {
+            return f();
+        }
+        self.host.activate(uid).map_err(error)?;
+        let result = f();
+        if let Some(b) = before {
+            // The document that was in front may have closed meanwhile.
+            let _ = self.host.activate(b);
+        }
+        result
     }
 
     pub fn state<T: 'static>(&self) -> JsResult<&T> {
@@ -95,15 +131,18 @@ pub(crate) fn exec(cap: &Cap, command: &str, params: Value) -> JsResult<Value> {
 }
 
 fn getter_fn(realm: &Realm, cap: &Cap, f: Getter) -> JsFunction {
-    NativeFunction::from_copy_closure_with_captures(|_this, _args, c: &FnCap<Getter>, ctx| (c.f)(&c.cap, ctx), FnCap { cap: cap.clone(), f })
-        .to_js_function(realm)
+    NativeFunction::from_copy_closure_with_captures(
+        |_this, _args, c: &FnCap<Getter>, ctx| c.cap.scoped(|| (c.f)(&c.cap, ctx)),
+        FnCap { cap: cap.clone(), f },
+    )
+    .to_js_function(realm)
 }
 
 fn setter_fn(realm: &Realm, cap: &Cap, f: Setter) -> JsFunction {
     NativeFunction::from_copy_closure_with_captures(
         |_this, args, c: &FnCap<Setter>, ctx| {
             let v = args.first().cloned().unwrap_or_default();
-            (c.f)(&c.cap, &v, ctx)?;
+            c.cap.scoped(|| (c.f)(&c.cap, &v, ctx))?;
             Ok(JsValue::undefined())
         },
         FnCap { cap: cap.clone(), f },
@@ -112,8 +151,11 @@ fn setter_fn(realm: &Realm, cap: &Cap, f: Setter) -> JsFunction {
 }
 
 fn method_fn(realm: &Realm, cap: &Cap, f: Method) -> JsFunction {
-    NativeFunction::from_copy_closure_with_captures(|_this, args, c: &FnCap<Method>, ctx| (c.f)(&c.cap, args, ctx), FnCap { cap: cap.clone(), f })
-        .to_js_function(realm)
+    NativeFunction::from_copy_closure_with_captures(
+        |_this, args, c: &FnCap<Method>, ctx| c.cap.scoped(|| (c.f)(&c.cap, args, ctx)),
+        FnCap { cap: cap.clone(), f },
+    )
+    .to_js_function(realm)
 }
 
 /// Builds a script object property by property.
@@ -138,6 +180,14 @@ impl<'a> Obj<'a> {
 
     pub fn value(mut self, name: &'static str, v: impl Into<JsValue>) -> Self {
         self.init.property(JsString::from(name), v, Attribute::all());
+        self
+    }
+
+    /// A method `for … in` does not list.
+    pub fn hidden_method(mut self, name: &'static str, f: Method) -> Self {
+        let Some(cap) = &self.cap else { return self };
+        let m = method_fn(&self.realm, cap, f);
+        self.init.property(JsString::from(name), m, Attribute::WRITABLE | Attribute::CONFIGURABLE);
         self
     }
 
@@ -227,44 +277,7 @@ pub(crate) fn install(host: &Host, ctx: &mut Context) -> JsResult<()> {
         .build();
     ctx.register_global_property(js_string!("RGBColor"), rgb, Attribute::all())?;
 
-    // The values only have to exist and differ: a script run from here shows no dialogs, and the
-    // enumerations are read by name.
-    for (name, members) in [
-        ("UserInteractionLevel", &[("DISPLAYALERTS", "1"), ("DONTDISPLAYALERTS", "2"), ("NEVERINTERACT", "3")][..]),
-        ("Justification", &[("LEFT", "left"), ("CENTER", "center"), ("RIGHT", "right"), ("FULLJUSTIFY", "justifyAll")][..]),
-        (
-            "ZOrderMethod",
-            &[("BRINGTOFRONT", "bringToFront"), ("BRINGFORWARD", "bringForward"), ("SENDBACKWARD", "sendBackward"), ("SENDTOBACK", "sendToBack")][..],
-        ),
-    ] {
-        let mut init = ObjectInitializer::new(ctx);
-        for (key, value) in members {
-            init.property(JsString::from(*key), JsString::from(*value), Attribute::all());
-        }
-        let object = init.build();
-        ctx.register_global_property(JsString::from(name), object, Attribute::all())?;
-    }
-
-    let cap = Cap::new(host, None);
-    let app = Obj::new(ctx, &cap)
-        .get("documents", app_documents)
-        .get("activeDocument", app_active_document)
-        .value("userInteractionLevel", 1)
-        .method("redraw", 0, |_cap, _args, _ctx| Ok(JsValue::undefined()))
-        .build();
-    ctx.register_global_property(js_string!("app"), app, Attribute::all())
-}
-
-fn app_documents(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    let items: Vec<JsValue> = if cap.host.document().is_null() { vec![] } else { vec![document_object(&cap.host, ctx).into()] };
-    Ok(JsArray::from_iter(items, ctx).into())
-}
-
-fn app_active_document(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
-    if cap.host.document().is_null() {
-        return Err(error("there is no document open"));
-    }
-    Ok(document_object(&cap.host, ctx).into())
+    crate::appobj::install(host, ctx)
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -272,16 +285,41 @@ fn app_active_document(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
 // ----------------------------------------------------------------------------------------------
 
 pub(crate) fn document_object(host: &Host, ctx: &mut Context) -> JsObject {
-    let cap = Cap::new(host, None);
+    document_object_for(host, host.active_uid(), ctx)
+}
+
+/// The scripting object of the document with this `uid` (the active one without it).
+pub(crate) fn document_object_for(host: &Host, uid: Option<u64>, ctx: &mut Context) -> JsObject {
+    let cap = match uid {
+        Some(u) => Cap::of_doc(host, u, None),
+        None => Cap::new(host, None),
+    };
     Obj::new(ctx, &cap)
         .value("typename", js_string!("Document"))
+        .hidden_method("__uid", |cap, _, _| Ok(cap.doc.map_or(JsValue::null(), |u| JsValue::from(u as f64))))
         .get("name", |cap, _ctx| Ok(text(cap.host.document().get("title").and_then(Value::as_str).unwrap_or_default())))
+        .get("fullName", crate::appobj::document_full_name)
+        .get("path", crate::appobj::document_folder)
+        .get("saved", |cap, _| Ok((!cap.host.document().get("dirty").and_then(Value::as_bool).unwrap_or(false)).into()))
+        .get("documentColorSpace", crate::appobj::document_color_space)
+        .get("activeView", crate::appobj::document_view)
         .get("layers", document_layers)
         .get("pageItems", document_page_items)
         .get("pathItems", document_path_items)
+        .get("groupItems", document_group_items)
+        .get("compoundPathItems", |cap, ctx| document_kind_items(cap, "CompoundPathItem", ctx))
+        .get("rasterItems", |cap, ctx| document_kind_items(cap, "RasterItem", ctx))
+        .get("placedItems", |cap, ctx| document_kind_items(cap, "PlacedItem", ctx))
+        .get("symbolItems", |cap, ctx| document_kind_items(cap, "SymbolItem", ctx))
         .get("textFrames", document_text_frames)
         .get("artboards", document_artboards)
-        .get("selection", document_selection)
+        .get_set("selection", document_selection, crate::appobj::set_selection)
+        .get_set("activeLayer", crate::appobj::active_layer, crate::appobj::set_active_layer)
+        .method("activate", 0, crate::appobj::document_activate)
+        .method("close", 1, crate::appobj::document_close)
+        .method("saveAs", 2, crate::appobj::document_save_as)
+        .method("save", 0, crate::appobj::document_save)
+        .method("selectObjectsOnActiveArtboard", 0, crate::appobj::select_on_active_artboard)
         .build()
 }
 
@@ -293,7 +331,7 @@ pub(crate) fn children(n: &Value) -> Vec<&Value> {
     n.get("children").and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default()
 }
 
-fn layer_list(doc: &Value) -> &[Value] {
+pub(crate) fn layer_list(doc: &Value) -> &[Value] {
     doc.get("layers").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default()
 }
 
@@ -328,7 +366,7 @@ pub(crate) fn find_parent(doc: &Value, id: u64) -> Option<Option<&Value>> {
 }
 
 /// Every node below the layers, in document order.
-fn all_nodes(doc: &Value) -> Vec<&Value> {
+pub(crate) fn all_nodes(doc: &Value) -> Vec<&Value> {
     fn walk<'a>(list: &'a [Value], out: &mut Vec<&'a Value>) {
         for n in list {
             out.push(n);
@@ -368,14 +406,14 @@ pub(crate) fn collection(objects: Vec<JsObject>, ctx: &mut Context) -> JsResult<
     Ok(array)
 }
 
-fn add_method(array: &JsObject, name: &'static str, cap: &Cap, f: Method, ctx: &mut Context) -> JsResult<()> {
+pub(crate) fn add_method(array: &JsObject, name: &'static str, cap: &Cap, f: Method, ctx: &mut Context) -> JsResult<()> {
     let m = method_fn(ctx.realm(), cap, f);
     array.set(JsString::from(name), m, false, ctx)?;
     Ok(())
 }
 
 /// The scripting objects for these nodes.
-fn node_objects(host: &Host, nodes: Vec<&Value>, ctx: &mut Context) -> Vec<JsObject> {
+pub(crate) fn node_objects(host: &Host, nodes: Vec<&Value>, ctx: &mut Context) -> Vec<JsObject> {
     nodes.into_iter().map(|n| node::node_object(host, n, ctx)).collect()
 }
 
@@ -383,7 +421,9 @@ fn node_objects(host: &Host, nodes: Vec<&Value>, ctx: &mut Context) -> Vec<JsObj
 fn document_layers(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
     let doc = cap.host.document();
     let objects = node_objects(&cap.host, layer_list(&doc).iter().collect(), ctx);
-    Ok(collection(objects, ctx)?.into())
+    let list = collection(objects, ctx)?;
+    add_method(&list, "add", cap, crate::appobj::layers_add, ctx)?;
+    Ok(list.into())
 }
 
 /// The items directly on the document's layers.
@@ -394,12 +434,30 @@ fn document_page_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
     Ok(collection(objects, ctx)?.into())
 }
 
-fn document_selection(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+pub(crate) fn document_selection(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
     let doc = cap.host.document();
     let ids: Vec<u64> = doc.get("selection").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
     let found: Vec<&Value> = ids.iter().filter_map(|id| find_node(&doc, *id)).collect();
     let objects = node_objects(&cap.host, found, ctx);
     Ok(collection(objects, ctx)?.into())
+}
+
+/// Every item of one kind in the document.
+fn document_kind_items(cap: &Cap, typename: &str, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let items: Vec<&Value> = all_nodes(&doc).into_iter().filter(|n| node::typename_of(n) == typename).collect();
+    let objects = node_objects(&cap.host, items, ctx);
+    Ok(collection(objects, ctx)?.into())
+}
+
+/// Every group in the document, with `add()` (a group on the current layer).
+fn document_group_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
+    let doc = cap.host.document();
+    let items: Vec<&Value> = all_nodes(&doc).into_iter().filter(|n| node::typename_of(n) == "GroupItem").collect();
+    let objects = node_objects(&cap.host, items, ctx);
+    let list = collection(objects, ctx)?;
+    add_method(&list, "add", cap, |cap, _args, ctx| Ok(node::pending_group(cap, None, ctx).into()), ctx)?;
+    Ok(list.into())
 }
 
 /// Every path in the document, with `add()` and `rectangle()`.
@@ -415,12 +473,25 @@ fn document_path_items(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
 
 /// `rectangle(top, left, width, height)`
 fn path_rectangle(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    rectangle(cap, None, args, ctx)
+}
+
+/// The same for a layer, group or compound path: the rectangle goes inside it.
+pub(crate) fn path_rectangle_in(cap: &Cap, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let pending = cap.extra.clone().and_then(|e| e.downcast::<crate::nodeops::Pending>().ok());
+    rectangle(cap, Some(crate::nodeops::Ref::Node { doc: cap.doc, id: cap.id(), pending }), args, ctx)
+}
+
+fn rectangle(cap: &Cap, container: Option<crate::nodeops::Ref>, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let arg = |i: usize, ctx: &mut Context| number(args.get(i).unwrap_or(&JsValue::undefined()), ctx);
     let (top, left, width, height) = (arg(0, ctx)?, arg(1, ctx)?, arg(2, ctx)?, arg(3, ctx)?);
     let origin = Origin::of(&cap.host.document());
     let (x, y) = origin.to_engine(left, top);
     let made = exec(cap, "shape.rectangle", json!({"x": x, "y": y, "width": width, "height": height}))?;
     let id = made.get("id").and_then(Value::as_u64).ok_or_else(|| error("the rectangle was not created"))?;
+    if let Some(target) = container {
+        crate::nodeops::adopt(cap, &target, id, crate::nodeops::Place::Begin)?;
+    }
     node::by_id(&cap.host, id, ctx)
 }
 
@@ -443,6 +514,8 @@ fn document_artboards(cap: &Cap, ctx: &mut Context) -> JsResult<JsValue> {
     let objects = (0..count).map(|i| artboard_object(&cap.host, i as u64, ctx)).collect();
     let list = collection(objects, ctx)?;
     add_method(&list, "add", cap, artboards_add, ctx)?;
+    add_method(&list, "setActiveArtboardIndex", cap, crate::appobj::set_active_artboard, ctx)?;
+    add_method(&list, "getActiveArtboardIndex", cap, crate::appobj::get_active_artboard, ctx)?;
     Ok(list.into())
 }
 

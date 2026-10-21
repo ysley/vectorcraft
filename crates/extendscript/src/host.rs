@@ -30,6 +30,14 @@ pub(crate) struct State {
     /// The document's summary, kept until a command may have changed it: reading one property
     /// of an item would otherwise summarise (or fetch) the whole document again.
     pub doc_cache: Option<Rc<Value>>,
+    /// Where each document's script coordinates start (its first artboard's top-left corner when
+    /// the script first met it), by `uid`: moving the artboard later does not move the origin, as
+    /// the reference app's document coordinates do not move.
+    pub origins: std::collections::HashMap<u64, [f64; 2]>,
+    /// The groups made with `groupItems.add()` that have no content yet, by token.
+    pub pending: Vec<Rc<crate::nodeops::Pending>>,
+    /// The artboard a script made active in each document (`setActiveArtboardIndex`), by `uid`.
+    pub active_artboard: std::collections::HashMap<u64, usize>,
 }
 
 /// A handle the script's native functions share. The script runs on one thread and every
@@ -42,7 +50,19 @@ pub(crate) struct Host {
 
 impl Host {
     pub fn new(session: Session) -> Self {
-        Self { state: Rc::new(RefCell::new(State { session, backend: None, alerts: vec![], presenter: None, file: None, doc_cache: None })) }
+        Self {
+            state: Rc::new(RefCell::new(State {
+                session,
+                backend: None,
+                alerts: vec![],
+                presenter: None,
+                file: None,
+                doc_cache: None,
+                origins: Default::default(),
+                pending: vec![],
+                active_artboard: Default::default(),
+            })),
+        }
     }
 
     pub fn set_file(&self, file: Option<std::path::PathBuf>) {
@@ -131,15 +151,68 @@ impl Host {
                 if let Some(doc) = &st.doc_cache {
                     return doc.clone();
                 }
-                let doc = Rc::new(match st.backend.as_mut() {
+                let mut summary = match st.backend.as_mut() {
                     Some(b) => b.document(),
                     None => inspect::document(&st.session),
-                });
+                };
+                // The document's script origin: fixed when first met.
+                if let Some(uid) = summary.get("uid").and_then(Value::as_u64) {
+                    let first = summary.get("artboards").and_then(Value::as_array).and_then(|a| a.first());
+                    let num = |k: &str| first.and_then(|a| a.get(k)).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0);
+                    let found = [num("x"), num("y")];
+                    let origin = *st.origins.entry(uid).or_insert(found);
+                    summary["scriptOrigin"] = serde_json::json!({"x": origin[0], "y": origin[1]});
+                }
+                let doc = Rc::new(summary);
                 st.doc_cache = Some(doc.clone());
                 doc
             }
             Err(_) => Rc::new(Value::Null),
         }
+    }
+
+    pub fn register_pending(&self, p: Rc<crate::nodeops::Pending>) -> u32 {
+        match self.state.try_borrow_mut() {
+            Ok(mut st) => {
+                st.pending.push(p);
+                (st.pending.len() - 1) as u32
+            }
+            Err(_) => 0,
+        }
+    }
+
+    pub fn pending_of(&self, token: u32) -> Option<Rc<crate::nodeops::Pending>> {
+        self.state.try_borrow().ok().and_then(|st| st.pending.get(token as usize).cloned())
+    }
+
+    /// The artboard a script made active in the document `uid` (the first by default).
+    pub fn active_artboard(&self, uid: u64) -> usize {
+        self.state.try_borrow().ok().and_then(|st| st.active_artboard.get(&uid).copied()).unwrap_or(0)
+    }
+
+    pub fn set_active_artboard(&self, uid: u64, index: usize) {
+        if let Ok(mut st) = self.state.try_borrow_mut() {
+            st.active_artboard.insert(uid, index);
+        }
+    }
+
+    /// The `uid` of the active document.
+    pub fn active_uid(&self) -> Option<u64> {
+        self.document().get("uid").and_then(Value::as_u64)
+    }
+
+    /// Make the document with this `uid` the active one. An error when it is closed.
+    pub fn activate(&self, uid: u64) -> Result<(), String> {
+        let doc = self.document();
+        if doc.get("uid").and_then(Value::as_u64) == Some(uid) {
+            return Ok(());
+        }
+        let index = doc
+            .get("documents")
+            .and_then(Value::as_array)
+            .and_then(|list| list.iter().position(|d| d.get("uid").and_then(Value::as_u64) == Some(uid)))
+            .ok_or_else(|| "the document was closed".to_string())?;
+        self.exec("document.activate", &serde_json::json!({"index": index})).map(|_| ())
     }
 
     /// Give the session back, with the alerts the script made. The handle stays usable but holds

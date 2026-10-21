@@ -85,6 +85,16 @@ fn slashed(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+/// A `File` for this path.
+pub(crate) fn file_object(host: &Host, path: PathBuf, ctx: &mut Context) -> JsObject {
+    make(host, path, false, ctx)
+}
+
+/// A `Folder` for this path.
+pub(crate) fn folder_object(host: &Host, path: PathBuf, ctx: &mut Context) -> JsObject {
+    make(host, path, true, ctx)
+}
+
 fn make(host: &Host, path: PathBuf, folder: bool, ctx: &mut Context) -> JsObject {
     let state = Rc::new(Entry { path, folder, io: RefCell::new(Io::default()) });
     let cap = Cap::with_state(host, state);
@@ -140,7 +150,7 @@ fn make(host: &Host, path: PathBuf, folder: bool, ctx: &mut Context) -> JsObject
 }
 
 /// A path given as a `File`, a `Folder` or a string.
-fn path_arg(v: Option<&JsValue>, ctx: &mut Context) -> JsResult<PathBuf> {
+pub(crate) fn path_arg(v: Option<&JsValue>, ctx: &mut Context) -> JsResult<PathBuf> {
     let Some(v) = v else { return Err(error("a file or a path is needed")) };
     if let Some(o) = v.as_object() {
         let name = o.get(js_string!("fsName"), ctx)?;

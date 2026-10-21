@@ -40,10 +40,19 @@ in use rely on. Lengths are points.
 | Artboards | `name`, `artboardRect`, `getByName()` on collections |
 | Globals | `alert`, `RGBColor`, `Justification`, `ZOrderMethod`, `UserInteractionLevel` |
 
+## Multi-document scripts (M13.9)
+
+`new DocumentPreset()`, `app.documents.add()` / `addDocument()`, `app.open()`, `document.activate()`,
+`close()`, `save()` / `saveAs()` (PDF and AI save options), `app.activeDocument`, `app.selection`,
+`executeMenuCommand` (copy, pasteFront, fitall…), `resize()`, `duplicate()`, `move()` with
+`ElementPlacement`, `groupItems.add()`, `CMYKColor`, `textFonts`, `activeLayer`, and
+`selectObjectsOnActiveArtboard` are supported. A script's coordinates have their origin at the
+top-left of the first artboard as first seen, y up. Unnamed objects read `name == ""`.
+
+Known limits: PDF presets (e.g. a "Dobra PDF" preset) are ignored, `Folder.selectDialog` is not
+available, and E4X is not supported.
+
 ## Not supported yet
 
-`Window` and the rest of ScriptUI, `File` and `Folder`, `$.evalFile` and `#include`, CMYK and
-other colour types, `resize()` and `duplicate()`, character fonts, `executeMenuCommand`,
-`app.open` and `saveAs`, and E4X. A script that uses one stops with the engine's error, which
-names the missing object. `setEntirePath` on a path that already has points, and `contents` or
-`setEntirePath` before an object from `add()` has content, are errors too.
+Other colour types, character fonts and E4X. A script that uses one stops with the engine's error, which
+names the missing object.
