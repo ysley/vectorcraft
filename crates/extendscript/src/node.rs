@@ -94,28 +94,17 @@ pub(crate) fn pending_group(cap: &Cap, container: Option<u64>, ctx: &mut Context
     nodeops::pending_group(cap, container, ctx)
 }
 
+/// The object for a group with nothing in it yet: the same as any group, whose properties read
+/// the document once the first thing is put in it (see [`Pending`](nodeops::Pending)).
 pub(crate) fn build_pending_group(cap: Cap, ctx: &mut Context) -> JsObject {
-    Obj::new(ctx, &cap)
-        .value("typename", js_string!("GroupItem"))
-        .hidden_method("__id", |cap, _, _| Ok(cap.id().map_or(JsValue::null(), |i| JsValue::from(i as f64))))
-        .hidden_method("__doc", |cap, _, _| Ok(cap.doc.map_or(JsValue::null(), |u| JsValue::from(u as f64))))
-        .hidden_method("__pending", |cap, _, _| Ok(JsValue::from(f64::from(cap.state::<nodeops::Pending>()?.token.get()))))
-        .get_set("name", pending_name, set_pending_name)
-        .get("pathItems", path_items)
-        .get("textFrames", |cap, ctx| {
-            let list = nodeops::kind_items(cap, "TextFrame", ctx)?;
-            crate::dom::add_method(&list, "add", cap, |cap, _args, ctx| Ok(pending_in(&cap.host, "Type", cap.id(), ctx).into()), ctx)?;
-            Ok(list.into())
-        })
-        .method("move", 2, nodeops::move_to_target)
-        .build()
+    build(cap, "GroupItem", ctx)
 }
 
 fn pending_name(cap: &Cap, _ctx: &mut Context) -> JsResult<JsValue> {
     if cap.id().is_some() {
         return node_name(cap, _ctx);
     }
-    let p = cap.state::<nodeops::Pending>()?;
+    let Ok(p) = cap.state::<nodeops::Pending>() else { return node_name(cap, _ctx) };
     Ok(text(p.name.borrow().as_deref().unwrap_or_default()))
 }
 
@@ -123,7 +112,7 @@ fn set_pending_name(cap: &Cap, v: &JsValue, ctx: &mut Context) -> JsResult<()> {
     if cap.id().is_some() {
         return set_node_name(cap, v, ctx);
     }
-    let p = cap.state::<nodeops::Pending>()?;
+    let Ok(p) = cap.state::<nodeops::Pending>() else { return set_node_name(cap, v, ctx) };
     *p.name.borrow_mut() = Some(v.to_string(ctx)?.to_std_string_escaped());
     Ok(())
 }
@@ -140,8 +129,10 @@ fn build(cap: Cap, typename: &'static str, ctx: &mut Context) -> JsObject {
         .value("typename", boa_engine::JsString::from(typename))
         .hidden_method("__id", |cap, _, _| Ok(cap.id().map_or(JsValue::null(), |i| JsValue::from(i as f64))))
         .hidden_method("__doc", |cap, _, _| Ok(cap.doc.map_or(JsValue::null(), |u| JsValue::from(u as f64))))
-        .hidden_method("__pending", |_, _, _| Ok(JsValue::null()))
-        .get_set("name", node_name, set_node_name)
+        .hidden_method("__pending", |cap, _, _| {
+            Ok(cap.state::<nodeops::Pending>().map_or(JsValue::null(), |p| JsValue::from(f64::from(p.token.get()))))
+        })
+        .get_set("name", pending_name, set_pending_name)
         .get_set("visible", |cap, _| Ok(flag(cap, "visible")?.into()), |cap, v, _| set_flag(cap, "visible", v.to_boolean()))
         .get_set("hidden", |cap, _| Ok((!flag(cap, "visible")?).into()), |cap, v, _| set_flag(cap, "visible", !v.to_boolean()))
         .get_set("locked", |cap, _| Ok(flag(cap, "locked")?.into()), |cap, v, _| set_flag(cap, "locked", v.to_boolean()))
